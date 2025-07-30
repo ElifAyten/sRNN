@@ -118,3 +118,12 @@ class GenerativeSRNN(nn.Module):
         gamma, delta = baum_welch.get_gamma(fwd, bwd, p_s, p_h, p_y)
         return p0, p_s, p_h, p_y, gamma, delta, fwd, bwd
 
+
+     
+def build_inference_network(input_dim: int, hidden_dim: int = 64, device="cpu") -> InferenceNetwork:
+    return InferenceNetwork(input_dim, hidden_dim).to(device)
+
+
+def build_generative_srnn(D: int, K: int = 2, H: int = 64, device="cpu") -> GenerativeSRNN:
+    return GenerativeSRNN(D, K, H).to(device)
+
