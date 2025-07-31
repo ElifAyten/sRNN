@@ -23,29 +23,35 @@ def choose_latent_dim(
     var_threshold: float = 0.90,
     max_dim: int | None = None,
     show_plot: bool = True,
+    nan_strategy: str = "fill",            # "fill" | "error" | "drop"
 ) -> int:
     """Return the smallest *H* whose cumulative explained variance ≥ *var_threshold*.
 
-    Parameters
-    ----------
-    rates : np.ndarray
-        Firing‑rate matrix, neurons × time.
-    var_threshold : float, default **0.90**
-        Target cumulative variance to capture.
-    max_dim : int | None
-        Limit the search to at most this many principal components.  If *None*,
-        use ``min(N, T)``.
-    show_plot : bool, default True
-        Whether to display the scree plot and mark the chosen *H*.
-
-    Returns
-    -------
-    int
-        Chosen latent dimension *H*.
+    Handles NaNs via *nan_strategy*:
+    * ``"fill"``  – replace NaNs/inf with 0 (default).
+    * ``"drop"``  – drop any time bins that contain NaNs across neurons.
+    * ``"error"`` – raise if NaNs present.
     """
     if rates.ndim != 2:
         raise ValueError("rates must be 2‑D [N, T]")
 
+    # ------------------------------------------------------------------
+    # 0) NaN / inf handling
+    # ------------------------------------------------------------------
+    if np.isnan(rates).any() or np.isinf(rates).any():
+        if nan_strategy == "fill":
+            rates = np.nan_to_num(rates, nan=0.0, posinf=0.0, neginf=0.0)
+        elif nan_strategy == "drop":
+            mask = ~np.isnan(rates).any(axis=0)
+            rates = rates[:, mask]
+            if rates.size == 0:
+                raise ValueError("All columns dropped after removing NaNs")
+        else:  # "error"
+            raise ValueError("Input contains NaN/inf – set nan_strategy to 'fill' or 'drop'")
+
+    # ------------------------------------------------------------------
+    # 1) PCA and variance curve
+    # ------------------------------------------------------------------
     N, T = rates.shape
     max_dim = max_dim or min(N, T)
 
@@ -95,3 +101,4 @@ def pca_latents(latents: np.ndarray, *, n_components: int = 2):
     pca = PCA(n_components=n_components)
     proj = pca.fit_transform(flat)
     return proj, pca
+
