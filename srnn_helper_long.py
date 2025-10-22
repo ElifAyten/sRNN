@@ -1,4 +1,4 @@
-# srnn_helper.py
+# `srnn_helper.py` 
 from __future__ import annotations
 import os, json, warnings
 from pathlib import Path
@@ -12,27 +12,38 @@ from sklearn.manifold import TSNE, Isomap, LocallyLinearEmbedding
 import h5py
 import matplotlib.pyplot as plt
 
+# Module-level defaults so short helper calls (no explicit roots) work too
+DATA_ROOT = Path(os.environ.get("SRNN_DATA_ROOT", ".")).resolve()
+OUTPUTS_ROOT = Path(os.environ.get("SRNN_OUTPUTS_ROOT", "./sRNN-Model-Outputs")).resolve()
 
 # Device
 def get_device() -> str:
-    if torch.cuda.is_available(): return "cuda"
-    if torch.backends.mps.is_available(): return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
     return "cpu"
 
-# Paths (parametrized)
-def h5_path_for_rat(rid: int, data_root: Path) -> Path:
-    return data_root / "Rat-Data-hdf5" / f"Rat{rid}" / "NpxFiringRate_Behavior_SBL_10msBINS_0smoothing.hdf5"
 
-def csv_path_area(rid: int, area: str, subset: str, data_root: Path) -> Path:
-    return data_root / "Sub-Data" / "Seperate-by-Area" / f"Rat{rid}" / f"area_splits_rat{rid}_{subset}" / f"{area}_wide.csv"
+# Paths (parametrized + convenient wrappers)
 
-def csv_path_responsive_all(rid: int, data_root: Path) -> Path:
-    return data_root / "Sub-Data" / "Only-Responsive" / f"Rat{rid}" / f"area_splits_rat{rid}_responsive" / "responsive_rates_raw.csv"
+def h5_path_for_rat(rid: int, data_root: Path | None = None) -> Path:
+    root = Path(data_root) if data_root is not None else DATA_ROOT
+    return root / "Rat-Data-hdf5" / f"Rat{rid}" / "NpxFiringRate_Behavior_SBL_10msBINS_0smoothing.hdf5"
 
-def base_model_dir(rid: int, outputs_root: Path) -> Path:
-    return outputs_root / f"Rat{rid}-Model-Outputs"
+def csv_path_area(rid: int, area: str, subset: str, data_root: Path | None = None) -> Path:
+    root = Path(data_root) if data_root is not None else DATA_ROOT
+    return root / "Sub-Data" / "Seperate-by-Area" / f"Rat{rid}" / f"area_splits_rat{rid}_{subset}" / f"{area}_wide.csv"
 
-def run_dir(rid: int, suffix: str, K: int, seed: int, kappa: float, outputs_root: Path) -> Path:
+def csv_path_responsive_all(rid: int, data_root: Path | None = None) -> Path:
+    root = Path(data_root) if data_root is not None else DATA_ROOT
+    return root / "Sub-Data" / "Only-Responsive" / f"Rat{rid}" / f"area_splits_rat{rid}_responsive" / "responsive_rates_raw.csv"
+
+def base_model_dir(rid: int, outputs_root: Path | None = None) -> Path:
+    out = Path(outputs_root) if outputs_root is not None else OUTPUTS_ROOT
+    return out / f"Rat{rid}-Model-Outputs"
+
+def run_dir(rid: int, suffix: str, K: int, seed: int, kappa: float, outputs_root: Path | None = None) -> Path:
     name = f"models_Rat{rid}_{suffix}_K{K}_seed{seed}_kappa{kappa:g}"
     return base_model_dir(rid, outputs_root) / name
 
@@ -41,11 +52,12 @@ def suffix_from(area: str | None, subset: str | None) -> str:
     if subset == "responsive": return f"{area}_responsive"
     if subset == "allActive":  return f"{area}"
     raise ValueError(f"Unknown (area={area}, subset={subset})")
-  
 # Data utils
 def read_wide_csv(csv_path: Path) -> pd.DataFrame:
-    try: return pd.read_csv(csv_path)
-    except Exception: return pd.read_csv(csv_path, engine="python")
+    try:
+        return pd.read_csv(csv_path)
+    except Exception:
+        return pd.read_csv(csv_path, engine="python")
 
 def build_footshock_regressor(t: np.ndarray, shock_times: np.ndarray | None) -> np.ndarray:
     v = np.zeros_like(t, dtype=float)
@@ -69,11 +81,14 @@ def downsample_FR_and_u(FR_TN, u_T1, *, ms_per_sample=10, rate_mode="mean"):
     FR_TN = np.nan_to_num(FR_TN, nan=0.0, posinf=0.0, neginf=0.0)
     u_T1  = np.nan_to_num(u_T1,  nan=0.0, posinf=0.0, neginf=0.0)
     factor = int(round(1000 / ms_per_sample))  # samples per 1 s
-    if factor <= 0: raise ValueError("ms_per_sample must be > 0 and <= 1000.")
+    if factor <= 0:
+        raise ValueError("ms_per_sample must be > 0 and <= 1000.")
     T, N = FR_TN.shape
-    if u_T1.shape[0] != T: raise ValueError(f"Length mismatch: FR_TN T={T} vs u_T1 T={u_T1.shape[0]}")
+    if u_T1.shape[0] != T:
+        raise ValueError(f"Length mismatch: FR_TN T={T} vs u_T1 T={u_T1.shape[0]}")
     T_sec = T // factor
-    if T_sec == 0: raise ValueError("Not enough samples for a 1-second bin.")
+    if T_sec == 0:
+        raise ValueError("Not enough samples for a 1-second bin.")
     cut    = T_sec * factor
     B      = FR_TN[:cut].reshape(T_sec, factor, N)
     FR_sec = np.nanmean(B, axis=1) if rate_mode == "mean" else np.nansum(B, axis=1)
@@ -111,7 +126,8 @@ def make_embedding(FR_sec, method="pca", n_components=None, random_state=None, a
             else:
                 Z = LocallyLinearEmbedding(n_neighbors=15, n_components=2,
                                            method="standard", random_state=random_state).fit_transform(X_pca50)
-        if not allow_2d_input: print(f"[warn] {method} is 2-D; great for viz, not ideal as SRNN inputs.")
+        if not allow_2d_input:
+            print(f"[warn] {method} is 2-D; great for viz, not ideal as SRNN inputs.")
         return Z.astype(np.float32), {"method":method,"n_components":2}
     raise ValueError(f"Unknown DR method: {method}")
 
@@ -130,13 +146,15 @@ def choose_latent_dim(Z_raw, FR_sec, strategy, fixed=None, cap=20, variance_goal
         d = int(round(rule_mult * d_in)); return int(np.clip(d, 2, cap))
     raise ValueError(f"Unknown latent dim strategy: {strategy}")
 
+
 # Dataset
 class NeuralDataset(Dataset):
     def __init__(self, rates_z: np.ndarray, footshock: np.ndarray, window_size=100, stride=1, dtype=np.float32):
         X = np.asarray(rates_z, dtype=dtype).T
         u = np.asarray(footshock, dtype=dtype)
         if u.ndim == 1: u = u[:, None]
-        if X.shape[0] != u.shape[0]: raise ValueError(f"time length mismatch: X T={X.shape[0]} vs footshock T={u.shape[0]}")
+        if X.shape[0] != u.shape[0]:
+            raise ValueError(f"time length mismatch: X T={X.shape[0]} vs footshock T={u.shape[0]}")
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
         u = np.nan_to_num(u, nan=0.0, posinf=0.0, neginf=0.0)
         self.X = torch.from_numpy(X)
@@ -153,24 +171,35 @@ class NeuralDataset(Dataset):
         u = torch.nan_to_num(u, nan=0.0, posinf=0.0, neginf=0.0)
         return x, u
 
-# Import SRNN & Patch
+# Import SRNN & Patch (fixes contiguity + cuDNN friendliness)
+
 def apply_srnn_patches():
     from sRNN.networks import InferenceNetwork as _Inf, GenerativeSRNN as _Gen
+
     def _inf_forward_stable(self, x):
-        x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
-        h_seq, _ = self.rnn(x)
+        x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0).contiguous()
+        # Ensure RNN params are packed for cuDNN
+        try:
+            self.rnn.flatten_parameters()
+        except Exception:
+            pass
+        # Provide an explicit hx that is contiguous
+        B, T, D = x.shape
+        h0 = torch.zeros(1, B, self.hidden_dim, device=x.device, dtype=x.dtype).contiguous()
+        h_seq, _ = self.rnn(x, h0)
         m  = self.fc_mean(h_seq)
         lv = torch.clamp(torch.nan_to_num(self.fc_logvar(h_seq), nan=0.0, posinf=10.0, neginf=-10.0), min=-8.0, max=5.0)
         std = torch.exp(0.5 * lv) + 1e-6
         std = torch.nan_to_num(std, nan=1e-3, posinf=1.0, neginf=1e-3)
         q = torch.distributions.Independent(torch.distributions.Normal(m, std), 1)
-        h = torch.nan_to_num(q.rsample(), nan=0.0, posinf=0.0, neginf=0.0)
+        h = torch.nan_to_num(q.rsample(), nan=0.0, posinf=0.0, neginf=0.0).contiguous()
         return h, q
+
     def _gen_forward_footshock(self, x, u, h_samp):
         B, T, N = x.shape; K = self.K; H = self.H; device = x.device
-        x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
-        u = torch.nan_to_num(u, nan=0.0, posinf=0.0, neginf=0.0)
-        # >>> ensure contiguous latent samples for RNN initial states
+        x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0).contiguous()
+        u = torch.nan_to_num(u, nan=0.0, posinf=0.0, neginf=0.0).contiguous()
+        # ensure contiguous latent samples for RNN initial states
         h_samp = torch.nan_to_num(h_samp, nan=0.0, posinf=0.0, neginf=0.0).contiguous()
         if not hasattr(self, "pi0"): self.pi0 = nn.Parameter(torch.zeros(K, device=device))
         p0 = F.log_softmax(self.pi0, dim=0).view(1, K).expand(B, K).contiguous()
@@ -181,6 +210,12 @@ def apply_srnn_patches():
         if not hasattr(self, "trans_u"): self.trans_u = nn.Linear(1, K*K, bias=False).to(device)
         if not hasattr(self, "rnns") or len(self.rnns) != K:
             self.rnns = nn.ModuleList([nn.RNN(N, H, batch_first=True).to(device) for _ in range(K)])
+        # Pack parameters for cuDNN (safe no-op on non-cuDNN backends)
+        for r in self.rnns:
+            try:
+                r.flatten_parameters()
+            except Exception:
+                pass
         if not hasattr(self, "std_h"):   self.std_h = 1e-2
         if not hasattr(self, "const_h"): self.const_h = float(-0.5*(H*np.log(2*np.pi*(self.std_h**2))))
         eye = torch.eye(K, device=device).view(1, K, K).expand(B, K, K)
@@ -193,9 +228,9 @@ def apply_srnn_patches():
                 A = A + torch.eye(K, device=device).view(1, K, K) * kappa_val
             A = A - torch.logsumexp(A, dim=2, keepdim=True)
             p_s[:, t] = A
-            # >>> ensure RNN inputs & hx are contiguous
-            x_step = x[:, t-1:t, :].contiguous()
-            h0     = h_samp[:, t-1, :].contiguous().unsqueeze(0)  # (1, B, H)
+            # ensure RNN inputs & hx are contiguous and fresh storage
+            x_step = x[:, t-1:t, :].contiguous().clone()
+            h0     = h_samp[:, t-1, :].contiguous().unsqueeze(0).clone()  # (1, B, H)
             for k in range(K):
                 out_k, _ = self.rnns[k](x_step, h0)
                 mean_h = out_k[:, 0, :]
@@ -205,6 +240,7 @@ def apply_srnn_patches():
         p_s = torch.nan_to_num(p_s, nan=-1e-8, posinf=-1e8, neginf=-1e8)
         p_h = torch.nan_to_num(p_h, nan=-1e-8, posinf=-1e8, neginf=-1e-8)
         return p0, p_s, p_h, None, None, None, None, None
+
     _Inf.forward = _inf_forward_stable
     _Gen.forward = _gen_forward_footshock
     return _Inf, _Gen
@@ -220,11 +256,12 @@ def fit_single_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
                     device: str | None = None):
     if device is None: device = get_device()
     torch.manual_seed(seed); np.random.seed(seed)
-    # Optional cudnn autotuner for fixed shapes
+    # Optional cuDNN autotuner for fixed shapes
     if device == "cuda":
         torch.backends.cudnn.benchmark = True
     save_dir = Path(save_dir)
-    if save_dir.exists() and not overwrite: raise FileExistsError(f"{save_dir} exists (use overwrite=True)")
+    if save_dir.exists() and not overwrite:
+        raise FileExistsError(f"{save_dir} exists (use overwrite=True)")
     save_dir.mkdir(parents=True, exist_ok=True)
 
     df = read_wide_csv(csv_path)
@@ -290,7 +327,7 @@ def fit_single_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
         infer.train(); gen.train()
         total = 0.0
         for xb, ub in loader:
-            # >>> make batch tensors contiguous on device
+            # make batch tensors contiguous on device
             x = xb.to(device, non_blocking=True).contiguous()
             u = ub.to(device, non_blocking=True).contiguous()
             opt.zero_grad()
@@ -357,7 +394,10 @@ def fit_single_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
     if verbose: print(f"✓ sRNN trained and saved → {save_dir}")
     return dict(status="ok", path=str(save_dir), msg="trained")
 
+# -----------------------------------------------------------------------------
 # Runner wrappers
+# -----------------------------------------------------------------------------
+
 def run_fit_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
                  K_states: int, seed: int, kappa: float,
                  *, dr_method="pca", dr_n_components=None, dr_random_state=None,
@@ -366,8 +406,8 @@ def run_fit_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
                  overwrite=False, verbose=True, device: str | None = None):
     try:
         save_dir.parent.mkdir(parents=True, exist_ok=True)
-        if not h5_path.exists(): return dict(status="skip_h5_missing", path=str(save_dir), msg=str(h5_path))
-        if not csv_path.exists(): return dict(status="skip_csv_missing", path=str(csv_path), msg=str(csv_path))
+        if not Path(h5_path).exists(): return dict(status="skip_h5_missing", path=str(save_dir), msg=str(h5_path))
+        if not Path(csv_path).exists(): return dict(status="skip_csv_missing", path=str(save_dir), msg=str(csv_path))
         out = fit_single_srnn(
             h5_path=h5_path, csv_path=csv_path, save_dir=save_dir,
             kappa=kappa, K_states=K_states, num_iters=num_iters,
@@ -384,6 +424,7 @@ def run_fit_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
     except Exception as e:
         import traceback; traceback.print_exc(limit=1)
         return dict(status="error", path=str(save_dir), msg=f"{type(e).__name__}: {e}")
+
 
 def run_kappa_sweep(*, rat: int, data_root: str | Path, outputs_root: str | Path,
                     K: int = 3, seed: int = 0, kappa_grid=(0.0,0.5,1.0,2.0),
@@ -443,7 +484,8 @@ if __name__ == "__main__":
         K=args.K, seed=args.seed, kappa_grid=tuple(args.kappa_grid),
         dr_method=args.dr_method, dr_n=args.dr_n,
         latent_dim=args.latent_dim, latent_strategy=args.latent_strategy,
-        variance_goal=args.variance_goal, latent_cap=args.latent_cap, num_iters=args.iters,
-        window_size=args.window, batch_size=args.batch, lr=args.lr,
+        variance_goal=args.variance_goal, latent_cap=args.latent_cap,
+        num_iters=args.iters, window_size=args.window, batch_size=args.batch, lr=args.lr,
         overwrite=args.overwrite, suffix="responsive"
     )
+
