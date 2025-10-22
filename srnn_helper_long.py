@@ -25,8 +25,9 @@ def set_roots(data_root: str | Path = None, outputs_root: str | Path = None):
         DEFAULT_DATA_ROOT = Path(data_root)
     if outputs_root is not None:
         DEFAULT_OUTPUTS_ROOT = Path(outputs_root)
-    print(f"[paths] DATA_ROOT={DEFAULT_DATA_ROOT}
-[paths] OUTPUTS_ROOT={DEFAULT_OUTPUTS_ROOT}")
+    print(f"[paths] DATA_ROOT={DEFAULT_DATA_ROOT}")
+    print(f"[paths] OUTPUTS_ROOT={DEFAULT_OUTPUTS_ROOT}")
+
 
 # -----------------------------------------------------------------------------
 # Module-level defaults so short helper calls (no explicit roots) work too
