@@ -170,7 +170,8 @@ def apply_srnn_patches():
         B, T, N = x.shape; K = self.K; H = self.H; device = x.device
         x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
         u = torch.nan_to_num(u, nan=0.0, posinf=0.0, neginf=0.0)
-        h_samp = torch.nan_to_num(h_samp, nan=0.0, posinf=0.0, neginf=0.0)
+        # >>> ensure contiguous latent samples for RNN initial states
+        h_samp = torch.nan_to_num(h_samp, nan=0.0, posinf=0.0, neginf=0.0).contiguous()
         if not hasattr(self, "pi0"): self.pi0 = nn.Parameter(torch.zeros(K, device=device))
         p0 = F.log_softmax(self.pi0, dim=0).view(1, K).expand(B, K).contiguous()
         p_s = torch.full((B, T, K, K), -1e8, device=device)
@@ -192,8 +193,11 @@ def apply_srnn_patches():
                 A = A + torch.eye(K, device=device).view(1, K, K) * kappa_val
             A = A - torch.logsumexp(A, dim=2, keepdim=True)
             p_s[:, t] = A
+            # >>> ensure RNN inputs & hx are contiguous
+            x_step = x[:, t-1:t, :].contiguous()
+            h0     = h_samp[:, t-1, :].contiguous().unsqueeze(0)  # (1, B, H)
             for k in range(K):
-                out_k, _ = self.rnns[k](x[:, t-1:t, :], h_samp[:, t-1, :].unsqueeze(0))
+                out_k, _ = self.rnns[k](x_step, h0)
                 mean_h = out_k[:, 0, :]
                 diff   = h_samp[:, t, :] - mean_h
                 p_h[:, t, k] = self.const_h - (diff.pow(2).sum(dim=1) / (2 * (self.std_h ** 2)))
@@ -216,6 +220,9 @@ def fit_single_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
                     device: str | None = None):
     if device is None: device = get_device()
     torch.manual_seed(seed); np.random.seed(seed)
+    # Optional cudnn autotuner for fixed shapes
+    if device == "cuda":
+        torch.backends.cudnn.benchmark = True
     save_dir = Path(save_dir)
     if save_dir.exists() and not overwrite: raise FileExistsError(f"{save_dir} exists (use overwrite=True)")
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -251,7 +258,14 @@ def fit_single_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
         if verbose: print(f"latent_dim → {latent_dim} (input d={d_in}, strategy={latent_dim_strategy}, DR={dr_meta['method']})")
 
     ds = NeuralDataset(Zz.T, u_sec, window_size=window_size)
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=True)
+    loader = DataLoader(
+        ds,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=True,
+        pin_memory=torch.cuda.is_available(),
+        num_workers=max(0, (os.cpu_count() or 2) // 2),
+    )
 
     _Inf, _Gen = apply_srnn_patches()
     infer = _Inf(input_dim=d_in, hidden_dim=latent_dim).to(device)
@@ -260,7 +274,7 @@ def fit_single_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
 
     for m in list(infer.modules()) + list(gen.modules()):
         if isinstance(m, nn.Linear):
-            nn.init.xavier_uniform_(m.weight); 
+            nn.init.xavier_uniform_(m.weight)
             if m.bias is not None: nn.init.constant_(m.bias, 0.0)
 
     opt = torch.optim.Adam(list(infer.parameters()) + list(gen.parameters()), lr=lr)
@@ -276,7 +290,9 @@ def fit_single_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
         infer.train(); gen.train()
         total = 0.0
         for xb, ub in loader:
-            x = xb.to(device); u = ub.to(device)
+            # >>> make batch tensors contiguous on device
+            x = xb.to(device, non_blocking=True).contiguous()
+            u = ub.to(device, non_blocking=True).contiguous()
             opt.zero_grad()
             h_samp, q_dist = infer(x)
             p0, p_s, p_h, _, *_ = gen(x, u, h_samp)
@@ -286,8 +302,8 @@ def fit_single_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
             trans_probs = torch.exp(p_s).clamp_min(1e-12)
             entropy_z = -(trans_probs * p_s).sum(dim=(1,2,3)).mean()
             loss = -elbo - 1e-3 * entropy_z
-            if torch.isnan(loss): 
-                if verbose: print("NaN loss, skipping batch"); 
+            if torch.isnan(loss):
+                if verbose: print("NaN loss, skipping batch")
                 continue
             loss.backward()
             torch.nn.utils.clip_grad_norm_(list(infer.parameters()) + list(gen.parameters()), 5.0)
@@ -306,7 +322,8 @@ def fit_single_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
     with torch.no_grad():
         all_h, all_z = [], []
         for xb, ub in loader:
-            x = xb.to(device); u = ub.to(device)
+            x = xb.to(device, non_blocking=True).contiguous()
+            u = ub.to(device, non_blocking=True).contiguous()
             h_samp, _ = infer(x); all_h.append(h_samp.cpu().numpy())
             p0, p_s, p_h, _, *_ = gen(x, u, h_samp)
             z_hat = torch.argmax(torch.logsumexp(p_s, dim=-1), dim=-1)
@@ -350,7 +367,7 @@ def run_fit_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
     try:
         save_dir.parent.mkdir(parents=True, exist_ok=True)
         if not h5_path.exists(): return dict(status="skip_h5_missing", path=str(save_dir), msg=str(h5_path))
-        if not csv_path.exists(): return dict(status="skip_csv_missing", path=str(save_dir), msg=str(csv_path))
+        if not csv_path.exists(): return dict(status="skip_csv_missing", path=str(csv_path), msg=str(csv_path))
         out = fit_single_srnn(
             h5_path=h5_path, csv_path=csv_path, save_dir=save_dir,
             kappa=kappa, K_states=K_states, num_iters=num_iters,
@@ -426,7 +443,7 @@ if __name__ == "__main__":
         K=args.K, seed=args.seed, kappa_grid=tuple(args.kappa_grid),
         dr_method=args.dr_method, dr_n=args.dr_n,
         latent_dim=args.latent_dim, latent_strategy=args.latent_strategy,
-        variance_goal=args.variance_goal, latent_cap=args.latent_cap,
-        num_iters=args.iters, window_size=args.window, batch_size=args.batch, lr=args.lr,
+        variance_goal=args.variance_goal, latent_cap=args.latent_cap, num_iters=args.iters,
+        window_size=args.window, batch_size=args.batch, lr=args.lr,
         overwrite=args.overwrite, suffix="responsive"
     )
