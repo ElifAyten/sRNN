@@ -1,4 +1,5 @@
-# `srnn_helper.py` 
+# `srnn_helper.py` (fully patched)
+
 from __future__ import annotations
 import os, json, warnings
 from pathlib import Path
@@ -12,7 +13,25 @@ from sklearn.manifold import TSNE, Isomap, LocallyLinearEmbedding
 import h5py
 import matplotlib.pyplot as plt
 
+# === Default roots (Google Drive) ===
+# Adjust these if your data lives elsewhere.
+DEFAULT_DATA_ROOT = Path("/content/drive/MyDrive/sRNN")
+DEFAULT_OUTPUTS_ROOT = Path("/content/drive/MyDrive/sRNN/sRNN-Model-Outputs")
+
+def set_roots(data_root: str | Path = None, outputs_root: str | Path = None):
+    """Optionally override default roots at runtime."""
+    global DEFAULT_DATA_ROOT, DEFAULT_OUTPUTS_ROOT
+    if data_root is not None:
+        DEFAULT_DATA_ROOT = Path(data_root)
+    if outputs_root is not None:
+        DEFAULT_OUTPUTS_ROOT = Path(outputs_root)
+    print(f"[paths] DATA_ROOT={DEFAULT_DATA_ROOT}
+[paths] OUTPUTS_ROOT={DEFAULT_OUTPUTS_ROOT}")
+
+# -----------------------------------------------------------------------------
 # Module-level defaults so short helper calls (no explicit roots) work too
+# You can set SRNN_DATA_ROOT and SRNN_OUTPUTS_ROOT env vars to override.
+# -----------------------------------------------------------------------------
 DATA_ROOT = Path(os.environ.get("SRNN_DATA_ROOT", ".")).resolve()
 OUTPUTS_ROOT = Path(os.environ.get("SRNN_OUTPUTS_ROOT", "./sRNN-Model-Outputs")).resolve()
 
@@ -24,26 +43,27 @@ def get_device() -> str:
         return "mps"
     return "cpu"
 
-
+# -----------------------------------------------------------------------------
 # Paths (parametrized + convenient wrappers)
+# -----------------------------------------------------------------------------
 
-def h5_path_for_rat(rid: int, data_root: Path | None = None) -> Path:
+def h5_path_for_rat(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
     root = Path(data_root) if data_root is not None else DATA_ROOT
     return root / "Rat-Data-hdf5" / f"Rat{rid}" / "NpxFiringRate_Behavior_SBL_10msBINS_0smoothing.hdf5"
 
-def csv_path_area(rid: int, area: str, subset: str, data_root: Path | None = None) -> Path:
+def csv_path_area(rid: int, area: str, subset: str, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
     root = Path(data_root) if data_root is not None else DATA_ROOT
     return root / "Sub-Data" / "Seperate-by-Area" / f"Rat{rid}" / f"area_splits_rat{rid}_{subset}" / f"{area}_wide.csv"
 
-def csv_path_responsive_all(rid: int, data_root: Path | None = None) -> Path:
+def csv_path_responsive_all(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
     root = Path(data_root) if data_root is not None else DATA_ROOT
     return root / "Sub-Data" / "Only-Responsive" / f"Rat{rid}" / f"area_splits_rat{rid}_responsive" / "responsive_rates_raw.csv"
 
-def base_model_dir(rid: int, outputs_root: Path | None = None) -> Path:
+def base_model_dir(rid: int, outputs_root: Path = DEFAULT_OUTPUTS_ROOT) -> Path:
     out = Path(outputs_root) if outputs_root is not None else OUTPUTS_ROOT
     return out / f"Rat{rid}-Model-Outputs"
 
-def run_dir(rid: int, suffix: str, K: int, seed: int, kappa: float, outputs_root: Path | None = None) -> Path:
+def run_dir(rid: int, suffix: str, K: int, seed: int, kappa: float, outputs_root: Path = DEFAULT_OUTPUTS_ROOT) -> Path:
     name = f"models_Rat{rid}_{suffix}_K{K}_seed{seed}_kappa{kappa:g}"
     return base_model_dir(rid, outputs_root) / name
 
@@ -52,7 +72,11 @@ def suffix_from(area: str | None, subset: str | None) -> str:
     if subset == "responsive": return f"{area}_responsive"
     if subset == "allActive":  return f"{area}"
     raise ValueError(f"Unknown (area={area}, subset={subset})")
+
+# -----------------------------------------------------------------------------
 # Data utils
+# -----------------------------------------------------------------------------
+
 def read_wide_csv(csv_path: Path) -> pd.DataFrame:
     try:
         return pd.read_csv(csv_path)
@@ -146,8 +170,9 @@ def choose_latent_dim(Z_raw, FR_sec, strategy, fixed=None, cap=20, variance_goal
         d = int(round(rule_mult * d_in)); return int(np.clip(d, 2, cap))
     raise ValueError(f"Unknown latent dim strategy: {strategy}")
 
-
+# -----------------------------------------------------------------------------
 # Dataset
+# -----------------------------------------------------------------------------
 class NeuralDataset(Dataset):
     def __init__(self, rates_z: np.ndarray, footshock: np.ndarray, window_size=100, stride=1, dtype=np.float32):
         X = np.asarray(rates_z, dtype=dtype).T
@@ -171,7 +196,9 @@ class NeuralDataset(Dataset):
         u = torch.nan_to_num(u, nan=0.0, posinf=0.0, neginf=0.0)
         return x, u
 
+# -----------------------------------------------------------------------------
 # Import SRNN & Patch (fixes contiguity + cuDNN friendliness)
+# -----------------------------------------------------------------------------
 
 def apply_srnn_patches():
     from sRNN.networks import InferenceNetwork as _Inf, GenerativeSRNN as _Gen
@@ -245,7 +272,10 @@ def apply_srnn_patches():
     _Gen.forward = _gen_forward_footshock
     return _Inf, _Gen
 
+# -----------------------------------------------------------------------------
 # Trainer
+# -----------------------------------------------------------------------------
+
 def fit_single_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
                     *, K_states=3, latent_dim=None, latent_dim_strategy="input_dim_cap",
                     variance_goal=0.90, latent_cap=20, latent_fixed=None,
@@ -488,4 +518,5 @@ if __name__ == "__main__":
         num_iters=args.iters, window_size=args.window, batch_size=args.batch, lr=args.lr,
         overwrite=args.overwrite, suffix="responsive"
     )
+
 
