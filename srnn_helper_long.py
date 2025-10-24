@@ -97,16 +97,13 @@ def downsample_FR_and_u(FR_TN, u_T1, *, ms_per_sample=10, rate_mode="mean"):
     u_sec  = (u_T1[:cut].reshape(T_sec, factor, 1).max(axis=1)).astype(FR_sec.dtype)
     return np.nan_to_num(FR_sec), np.nan_to_num(u_sec)
 
-# ===== DCA-lite helpers (predictive subspace via time-lagged covariance) =====
-def _time_lagged_projection(X_TN, d=8, lag=1, ridge=1e-6, symmetric=False):
+# ===== DCA auto-dim selection (variance-style on predictive spectrum) =====
+def _dca_auto_select(X_TN, *, lag=1, ridge=1e-6, symmetric=False,
+                     variance_goal=0.90, cap=20, min_d=2):
     """
-    X_TN : (T, N) standardized time series (zero mean, unit variance per feature).
+    Automatically choose DCA dimensionality based on cumulative predictive eigenvalues.
     Returns:
-      Z_Td : (T, d) projected time series
-      V_Nd : (N, d) loadings (columns = components)
-    Notes:
-      - symmetric=True → SFA-like (uses (C1 + C1^T)/2), equals DCA at T=1 for time-reversible data.
-      - symmetric=False → CCA-like (whitened C1), often better for time-irreversible dynamics.
+      Z_Td, V_Nd, d, eigvals_sorted
     """
     X = np.asarray(X_TN, float)
     X -= X.mean(0, keepdims=True)
@@ -114,32 +111,91 @@ def _time_lagged_projection(X_TN, d=8, lag=1, ridge=1e-6, symmetric=False):
     if T <= lag:
         raise ValueError(f"lag={lag} requires T>{lag}, but T={T}")
 
-    # same-time covariance (regularized)
+    # Covariances
     C0 = (X.T @ X) / T + ridge * np.eye(N)
-
-    # lagged covariance
-    Xp = X[:-lag]
-    Xf = X[lag:]
+    Xp, Xf = X[:-lag], X[lag:]
     C1 = (Xp.T @ Xf) / (T - lag)
 
+    # Whiten C0
+    w, Vc0 = eigh(C0)
+    w = np.maximum(w, ridge)
+    Wm12 = Vc0 @ np.diag(1.0 / np.sqrt(w)) @ Vc0.T
+
+    # Build predictive operator
     if symmetric:
-        M = np.linalg.solve(C0, 0.5 * (C1 + C1.T))
+        M = Wm12 @ (0.5 * (C1 + C1.T)) @ Wm12
         M = 0.5 * (M + M.T)
-        vals, vecs = eigh(M)  # ascending
-        V = vecs[:, np.argsort(vals)[-d:]]
-        Q, _ = np.linalg.qr(V)
-        V = Q
     else:
-        w, Vc0 = eigh(C0)
-        w = np.maximum(w, ridge)
-        Wm12 = Vc0 @ np.diag(1.0/np.sqrt(w)) @ Vc0.T
         Mcca = Wm12 @ C1 @ Wm12
         M = 0.5 * (Mcca + Mcca.T)
-        vals, vecs = eigh(M)
-        V = Wm12 @ vecs[:, np.argsort(vals)[-d:]]
 
+    vals, vecs = eigh(M)
+    order = np.argsort(np.abs(vals))[::-1]
+    vals_sorted = vals[order]
+    vecs_sorted = vecs[:, order]
+
+    # Choose d automatically from cumulative |eig| fraction
+    abs_vals = np.abs(vals_sorted)
+    total = abs_vals.sum()
+    if total <= 0:
+        d = min_d
+    else:
+        cum = np.cumsum(abs_vals) / total
+        d = int(np.searchsorted(cum, variance_goal) + 1)
+        d = int(np.clip(d, min_d, cap))
+
+    V = Wm12 @ vecs_sorted[:, :d]
     Z = X @ V
-    return Z.astype(np.float32), V.astype(np.float32)
+    return Z.astype(np.float32), V.astype(np.float32), d, vals_sorted
+
+def _dca_auto_select(X_TN, *, lag=1, ridge=1e-6, symmetric=False,
+                     variance_goal=0.90, cap=20, min_d=2):
+    """
+    Auto-pick DCA dimensionality from the predictive spectrum.
+    Returns Z, V, d, eigvals_sorted.
+    """
+    X = np.asarray(X_TN, float)
+    X -= X.mean(0, keepdims=True)
+    T, N = X.shape
+    if T <= lag:
+        raise ValueError(f"lag={lag} requires T>{lag}, but T={T}")
+
+    # covariances
+    C0 = (X.T @ X) / T + ridge * np.eye(N)
+    Xp, Xf = X[:-lag], X[lag:]
+    C1 = (Xp.T @ Xf) / (T - lag)
+
+    # whiten C0
+    w, Vc0 = eigh(C0)
+    w = np.maximum(w, ridge)
+    Wm12 = Vc0 @ np.diag(1.0 / np.sqrt(w)) @ Vc0.T
+
+    # predictive operator
+    if symmetric:
+        M = Wm12 @ (0.5 * (C1 + C1.T)) @ Wm12
+        M = 0.5 * (M + M.T)
+    else:
+        Mcca = Wm12 @ C1 @ Wm12
+        M = 0.5 * (Mcca + Mcca.T)
+
+    vals, vecs = eigh(M)
+    order = np.argsort(np.abs(vals))[::-1]
+    vals_sorted = vals[order]
+    vecs_sorted = vecs[:, order]
+
+    # choose d by cumulative |eig| fraction
+    abs_vals = np.abs(vals_sorted)
+    total = abs_vals.sum()
+    if total <= 0:
+        d = min_d
+    else:
+        cum = np.cumsum(abs_vals) / total
+        d = int(np.searchsorted(cum, variance_goal) + 1)
+        d = int(np.clip(d, min_d, cap))
+
+    V = Wm12 @ vecs_sorted[:, :d]
+    Z = X @ V
+    return Z.astype(np.float32), V.astype(np.float32), d, vals_sorted
 
 def make_embedding(FR_sec, method="pca", n_components=None, random_state=None, allow_2d_input=False):
     X = _std_nan_robust(FR_sec)
