@@ -96,25 +96,97 @@ def downsample_FR_and_u(FR_TN, u_T1, *, ms_per_sample=10, rate_mode="mean"):
     FR_sec = np.nanmean(B, axis=1) if rate_mode == "mean" else np.nansum(B, axis=1)
     u_sec  = (u_T1[:cut].reshape(T_sec, factor, 1).max(axis=1)).astype(FR_sec.dtype)
     return np.nan_to_num(FR_sec), np.nan_to_num(u_sec)
+    
+# ===== DCA-lite helpers (predictive subspace via time-lagged covariance) =====
+import numpy as np
+from numpy.linalg import eigh
+
+def _time_lagged_projection(X_TN, d=8, lag=1, ridge=1e-6, symmetric=False):
+    """
+    X_TN : (T, N) standardized time series (zero mean, unit variance per feature).
+    Returns:
+      Z_Td : (T, d) projected time series
+      V_Nd : (N, d) loadings (columns = components)
+    Notes:
+      - symmetric=True → SFA-like (uses (C1 + C1^T)/2), equals DCA at T=1 for time-reversible data.
+      - symmetric=False → CCA-like (whitened C1), often better for time-irreversible dynamics.
+    """
+    X = np.asarray(X_TN, float)
+    X -= X.mean(0, keepdims=True)
+    T, N = X.shape
+    if T <= lag:
+        raise ValueError(f"lag={lag} requires T>{lag}, but T={T}")
+
+    # same-time covariance (regularized)
+    C0 = (X.T @ X) / T + ridge * np.eye(N)
+
+    # lagged covariance
+    Xp = X[:-lag]
+    Xf = X[lag:]
+    C1 = (Xp.T @ Xf) / (T - lag)
+
+    if symmetric:
+        # generalized eigen on C0^{-1} * (C1+C1^T)/2 (symmetric)
+        M = np.linalg.solve(C0, 0.5 * (C1 + C1.T))
+        M = 0.5 * (M + M.T)  # enforce symmetry
+        vals, vecs = eigh(M)  # ascending order
+        V = vecs[:, np.argsort(vals)[-d:]]  # top d
+        # C0-metric orthonormalization
+        Q, _ = np.linalg.qr(V)
+        V = Q
+    else:
+        # CCA-like whitening: eig(C0) = Vc0 diag(w) Vc0^T
+        w, Vc0 = eigh(C0)
+        w = np.maximum(w, ridge)
+        Wm12 = Vc0 @ np.diag(1.0/np.sqrt(w)) @ Vc0.T
+        Mcca = Wm12 @ C1 @ Wm12
+        # keep it real symmetric before eig
+        M = 0.5 * (Mcca + Mcca.T)
+        vals, vecs = eigh(M)
+        V = Wm12 @ vecs[:, np.argsort(vals)[-d:]]  # map back to original coords
+
+    Z = X @ V
+    return Z.astype(np.float32), V.astype(np.float32)
+
 
 def make_embedding(FR_sec, method="pca", n_components=None, random_state=None, allow_2d_input=False):
     X = _std_nan_robust(FR_sec)
+
     if method == "none":
-        Z = X.astype(np.float32);  return Z, {"method":"none","n_components":int(Z.shape[1])}
+        Z = X.astype(np.float32)
+        return Z, {"method":"none","n_components":int(Z.shape[1])}
+
+    # --- classical linear DR ---
     if method in ("pca","fa","ica","nmf"):
         d = n_components if n_components is not None else min(10, X.shape[1])
         if method == "pca":
             model = PCA(n_components=d, random_state=random_state).fit(X)
             Z = model.transform(X)
         elif method == "fa":
-            model = FactorAnalysis(n_components=d, random_state=random_state).fit(X); Z = model.transform(X)
+            model = FactorAnalysis(n_components=d, random_state=random_state).fit(X)
+            Z = model.transform(X)
         elif method == "ica":
-            model = FastICA(n_components=d, random_state=random_state, max_iter=2000).fit(X); Z = model.transform(X)
-        else:
+            model = FastICA(n_components=d, random_state=random_state, max_iter=2000).fit(X)
+            Z = model.transform(X)
+        else:  # nmf
             Xpos = X - X.min() + 1e-6
             model = NMF(n_components=d, init="nndsvda", random_state=random_state, max_iter=2000).fit(Xpos)
             Z = model.transform(Xpos)
-        return Z.astype(np.float32), {"method":method,"n_components":int(Z.shape[1])}
+        return Z.astype(np.float32), {"method":method, "n_components":int(Z.shape[1])}
+
+    # --- DCA-lite (lag-1 predictive components) ---
+    if method in ("dca1", "dca1_sym"):
+        d = n_components if n_components is not None else min(10, X.shape[1])
+        symmetric = (method == "dca1_sym")   # SFA-like vs CCA-like
+        Z, V = _time_lagged_projection(X, d=d, lag=1, ridge=1e-6, symmetric=symmetric)
+        return Z.astype(np.float32), {
+            "method": method,
+            "n_components": int(Z.shape[1]),
+            "lag": 1,
+            "symmetric": bool(symmetric)
+        }
+
+    # --- 2-D viz methods (not ideal as SRNN inputs) ---
     if method in ("tsne2","isomap2","lle2"):
         pca50_dim = min(50, X.shape[1])
         X_pca50 = PCA(n_components=pca50_dim, random_state=random_state).fit_transform(X)
@@ -128,9 +200,12 @@ def make_embedding(FR_sec, method="pca", n_components=None, random_state=None, a
             else:
                 Z = LocallyLinearEmbedding(n_neighbors=15, n_components=2,
                                            method="standard", random_state=random_state).fit_transform(X_pca50)
-        if not allow_2d_input: print(f"[warn] {method} is 2-D; great for viz, not ideal as SRNN inputs.")
+        if not allow_2d_input:
+            print(f"[warn] {method} is 2-D; great for viz, not ideal as SRNN inputs.")
         return Z.astype(np.float32), {"method":method,"n_components":2}
+
     raise ValueError(f"Unknown DR method: {method}")
+
 
 def choose_latent_dim(Z_raw, FR_sec, strategy, fixed=None, cap=20, variance_goal=0.90, rule_mult=1.0):
     d_in = Z_raw.shape[1]
