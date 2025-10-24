@@ -82,14 +82,18 @@ def downsample_FR_and_u(FR_TN, u_T1, *, ms_per_sample=10, rate_mode="mean"):
     return FR_sec, u_sec
 
 
-# --- DCA auto-dim ---
-def _dca_auto_select(X_TN, *, lag=1, ridge=1e-6, symmetric=False,
-                     variance_goal=0.90, cap=20, min_d=2):
+# --- DCA (fixed 8 components) ---
+def _dca_fixed(X_TN, *, lag=1, ridge=1e-6, symmetric=False, d=8):
+    """
+    Simplified DCA-lite: always returns exactly `d` predictive components.
+    """
     X = np.asarray(X_TN, float)
     X -= X.mean(0, keepdims=True)
     T, N = X.shape
-    if T <= lag: raise ValueError(f"lag={lag} requires T>{lag}, but T={T}")
+    if T <= lag:
+        raise ValueError(f"lag={lag} requires T>{lag}, but T={T}")
 
+    # Covariance and predictive operator
     C0 = (X.T @ X) / T + ridge * np.eye(N)
     Xp, Xf = X[:-lag], X[lag:]
     C1 = (Xp.T @ Xf) / (T - lag)
@@ -107,14 +111,10 @@ def _dca_auto_select(X_TN, *, lag=1, ridge=1e-6, symmetric=False,
 
     vals, vecs = eigh(M)
     order = np.argsort(np.abs(vals))[::-1]
-    vals_sorted, vecs_sorted = vals[order], vecs[:, order]
-    abs_vals = np.abs(vals_sorted)
-    cum = np.cumsum(abs_vals) / abs_vals.sum() if abs_vals.sum() > 0 else np.array([])
-    d = int(np.searchsorted(cum, variance_goal) + 1) if len(cum) else min_d
-    d = int(np.clip(d, min_d, cap))
+    vecs_sorted = vecs[:, order]
     V = Wm12 @ vecs_sorted[:, :d]
     Z = X @ V
-    return Z.astype(np.float32), V.astype(np.float32), d, vals_sorted
+    return Z.astype(np.float32), V.astype(np.float32), d
 
 
 # --- embedding ---
@@ -123,9 +123,9 @@ def make_embedding(FR_sec, method="pca", n_components=None, random_state=None, a
 
     if method == "none":
         Z = X.astype(np.float32)
-        return Z, {"method":"none","n_components":int(Z.shape[1])}
+        return Z, {"method": "none", "n_components": int(Z.shape[1])}
 
-    if method in ("pca","fa","ica","nmf"):
+    if method in ("pca", "fa", "ica", "nmf"):
         d = n_components if n_components is not None else min(10, X.shape[1])
         if method == "pca":
             model = PCA(n_components=d, random_state=random_state).fit(X); Z = model.transform(X)
@@ -137,21 +137,16 @@ def make_embedding(FR_sec, method="pca", n_components=None, random_state=None, a
             Xpos = X - X.min() + 1e-6
             model = NMF(n_components=d, init="nndsvda", random_state=random_state, max_iter=2000).fit(Xpos)
             Z = model.transform(Xpos)
-        return Z.astype(np.float32), {"method":method,"n_components":int(Z.shape[1])}
+        return Z.astype(np.float32), {"method": method, "n_components": int(Z.shape[1])}
 
-    if method in ("dca1","dca1_sym"):
+    # --- DCA (always 8 components) ---
+    if method in ("dca1", "dca1_sym"):
         symmetric = (method == "dca1_sym")
-        if n_components is None:
-            Z, V, d_auto, eigvals = _dca_auto_select(
-                X, lag=1, ridge=1e-6, symmetric=symmetric, variance_goal=0.9, cap=20, min_d=2
-            )
-            return Z, {"method":method,"n_components":int(d_auto),"auto":True,"variance_goal":0.9,"cap":20}
-        else:
-            d = int(n_components)
-            Z, V, _, _ = _dca_auto_select(X, lag=1, ridge=1e-6, symmetric=symmetric, variance_goal=1.0, cap=d, min_d=d)
-            return Z, {"method":method,"n_components":d,"auto":False}
+        d = 8  # fixed
+        Z, V, _ = _dca_fixed(X, lag=1, ridge=1e-6, symmetric=symmetric, d=d)
+        return Z, {"method": method, "n_components": d, "symmetric": symmetric, "fixed": True}
 
-    if method in ("tsne2","isomap2","lle2"):
+    if method in ("tsne2", "isomap2", "lle2"):
         pca50_dim = min(50, X.shape[1])
         X_pca50 = PCA(n_components=pca50_dim, random_state=random_state).fit_transform(X)
         with warnings.catch_warnings():
@@ -164,7 +159,7 @@ def make_embedding(FR_sec, method="pca", n_components=None, random_state=None, a
                 Z = LocallyLinearEmbedding(n_neighbors=15, n_components=2, random_state=random_state).fit_transform(X_pca50)
         if not allow_2d_input:
             print(f"[warn] {method} is 2-D; great for viz, not ideal as SRNN inputs.")
-        return Z.astype(np.float32), {"method":method,"n_components":2}
+        return Z.astype(np.float32), {"method": method, "n_components": 2}
 
     raise ValueError(f"Unknown DR method: {method}")
 
@@ -174,14 +169,14 @@ class NeuralDataset(Dataset):
     def __init__(self, rates_z, footshock, window_size=100, stride=1):
         X = np.asarray(rates_z, np.float32).T
         u = np.asarray(footshock, np.float32)
-        if u.ndim == 1: u = u[:,None]
+        if u.ndim == 1: u = u[:, None]
         if X.shape[0] != u.shape[0]: raise ValueError("length mismatch")
         self.X, self.u = torch.from_numpy(X), torch.from_numpy(u)
         self.W, self.stride = window_size, max(1, int(stride))
-    def __len__(self): return 1 + (len(self.X)-self.W)//self.stride
+    def __len__(self): return 1 + (len(self.X) - self.W) // self.stride
     def __getitem__(self, i):
-        s=i*self.stride; e=s+self.W
-        x=self.X[s:e,:]; u=self.u[s:e,:]
+        s = i * self.stride; e = s + self.W
+        x = self.X[s:e, :]; u = self.u[s:e, :]
         return torch.nan_to_num(x), torch.nan_to_num(u)
 
 
@@ -190,41 +185,43 @@ def apply_srnn_patches():
     from sRNN.networks import InferenceNetwork as _Inf, GenerativeSRNN as _Gen
 
     def _inf_forward_stable(self, x):
-        x=torch.nan_to_num(x).contiguous()
-        try:self.rnn.flatten_parameters()
-        except:pass
-        B,T,D=x.shape; num_dirs=2 if getattr(self.rnn,"bidirectional",False) else 1
-        h0=torch.zeros(num_dirs, B, self.rnn.hidden_size, device=x.device)
-        h_seq,_=self.rnn(x,h0)
-        m=self.fc_mean(h_seq)
-        lv=torch.clamp(torch.nan_to_num(self.fc_logvar(h_seq)),min=-8,max=5)
-        std=torch.exp(0.5*lv)+1e-6
-        q=torch.distributions.Independent(torch.distributions.Normal(m,std),1)
+        x = torch.nan_to_num(x).contiguous()
+        try: self.rnn.flatten_parameters()
+        except: pass
+        B, T, D = x.shape
+        num_dirs = 2 if getattr(self.rnn, "bidirectional", False) else 1
+        h0 = torch.zeros(num_dirs, B, self.rnn.hidden_size, device=x.device)
+        h_seq, _ = self.rnn(x, h0)
+        m = self.fc_mean(h_seq)
+        lv = torch.clamp(torch.nan_to_num(self.fc_logvar(h_seq)), min=-8, max=5)
+        std = torch.exp(0.5 * lv) + 1e-6
+        q = torch.distributions.Independent(torch.distributions.Normal(m, std), 1)
         return torch.nan_to_num(q.rsample()), q
 
-    def _gen_forward_footshock(self,x,u,h_samp):
-        B,T,N=x.shape; K=self.K; H=self.H; device=x.device
-        x,u,h_samp=torch.nan_to_num(x),torch.nan_to_num(u),torch.nan_to_num(h_samp)
-        if not hasattr(self,"pi0"): self.pi0=nn.Parameter(torch.zeros(K,device=device))
-        p0=F.log_softmax(self.pi0,dim=0).view(1,K).expand(B,K)
-        p_s=torch.full((B,T,K,K),-1e8,device=device); p_h=torch.zeros(B,T,K,device=device)
-        if not hasattr(self,"trans_h"): self.trans_h=nn.Linear(H,K*K).to(device)
-        if not hasattr(self,"trans_u"): self.trans_u=nn.Linear(1,K*K,bias=False).to(device)
-        if not hasattr(self,"rnns") or len(self.rnns)!=K:
-            self.rnns=nn.ModuleList([nn.RNN(N,H,batch_first=True).to(device) for _ in range(K)])
-        for t in range(1,T):
-            A=(self.trans_h(h_samp[:,t-1,:])+self.trans_u(u[:,t,:])).view(B,K,K)
-            kappa=getattr(self,"kappa",0.0)
-            if kappa!=0.0: A=A+torch.eye(K,device=device)*kappa
-            A=A-torch.logsumexp(A,dim=2,keepdim=True)
-            p_s[:,t]=A
+    def _gen_forward_footshock(self, x, u, h_samp):
+        B, T, N = x.shape; K = self.K; H = self.H; device = x.device
+        x, u, h_samp = torch.nan_to_num(x), torch.nan_to_num(u), torch.nan_to_num(h_samp)
+        if not hasattr(self, "pi0"): self.pi0 = nn.Parameter(torch.zeros(K, device=device))
+        p0 = F.log_softmax(self.pi0, dim=0).view(1, K).expand(B, K)
+        p_s = torch.full((B, T, K, K), -1e8, device=device)
+        p_h = torch.zeros(B, T, K, device=device)
+        if not hasattr(self, "trans_h"): self.trans_h = nn.Linear(H, K*K).to(device)
+        if not hasattr(self, "trans_u"): self.trans_u = nn.Linear(1, K*K, bias=False).to(device)
+        if not hasattr(self, "rnns") or len(self.rnns) != K:
+            self.rnns = nn.ModuleList([nn.RNN(N, H, batch_first=True).to(device) for _ in range(K)])
+        for t in range(1, T):
+            A = (self.trans_h(h_samp[:, t-1, :]) + self.trans_u(u[:, t, :])).view(B, K, K)
+            kappa = getattr(self, "kappa", 0.0)
+            if kappa != 0.0: A = A + torch.eye(K, device=device) * kappa
+            A = A - torch.logsumexp(A, dim=2, keepdim=True)
+            p_s[:, t] = A
             for k in range(K):
-                out,_=self.rnns[k](x[:,t-1:t,:],h_samp[:,t-1,:].unsqueeze(0))
-                diff=h_samp[:,t,:]-out[:,0,:]
-                p_h[:,t,k]=-0.5*(diff.pow(2).sum(dim=1)/(1e-2**2))
-        return p0,p_s,p_h,None,None,None,None,None
+                out, _ = self.rnns[k](x[:, t-1:t, :], h_samp[:, t-1, :].unsqueeze(0))
+                diff = h_samp[:, t, :] - out[:, 0, :]
+                p_h[:, t, k] = -0.5 * (diff.pow(2).sum(dim=1) / (1e-2 ** 2))
+        return p0, p_s, p_h, None, None, None, None, None
 
-    _Inf.forward=_inf_forward_stable
-    _Gen.forward=_gen_forward_footshock
-    return _Inf,_Gen
+    _Inf.forward = _inf_forward_stable
+    _Gen.forward = _gen_forward_footshock
+    return _Inf, _Gen
 
