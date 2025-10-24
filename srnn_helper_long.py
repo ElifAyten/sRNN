@@ -1,4 +1,3 @@
-# srnn_helper.py
 from __future__ import annotations
 import os, json, warnings
 from pathlib import Path
@@ -11,6 +10,7 @@ from sklearn.decomposition import PCA, FactorAnalysis, FastICA, NMF
 from sklearn.manifold import TSNE, Isomap, LocallyLinearEmbedding
 import h5py
 import matplotlib.pyplot as plt
+from numpy.linalg import eigh
 
 # === Defaults (match your Drive) ===
 DEFAULT_DATA_ROOT = Path("/content/drive/MyDrive/sRNN")
@@ -96,11 +96,8 @@ def downsample_FR_and_u(FR_TN, u_T1, *, ms_per_sample=10, rate_mode="mean"):
     FR_sec = np.nanmean(B, axis=1) if rate_mode == "mean" else np.nansum(B, axis=1)
     u_sec  = (u_T1[:cut].reshape(T_sec, factor, 1).max(axis=1)).astype(FR_sec.dtype)
     return np.nan_to_num(FR_sec), np.nan_to_num(u_sec)
-    
-# ===== DCA-lite helpers (predictive subspace via time-lagged covariance) =====
-import numpy as np
-from numpy.linalg import eigh
 
+# ===== DCA-lite helpers (predictive subspace via time-lagged covariance) =====
 def _time_lagged_projection(X_TN, d=8, lag=1, ridge=1e-6, symmetric=False):
     """
     X_TN : (T, N) standardized time series (zero mean, unit variance per feature).
@@ -126,28 +123,23 @@ def _time_lagged_projection(X_TN, d=8, lag=1, ridge=1e-6, symmetric=False):
     C1 = (Xp.T @ Xf) / (T - lag)
 
     if symmetric:
-        # generalized eigen on C0^{-1} * (C1+C1^T)/2 (symmetric)
         M = np.linalg.solve(C0, 0.5 * (C1 + C1.T))
-        M = 0.5 * (M + M.T)  # enforce symmetry
-        vals, vecs = eigh(M)  # ascending order
-        V = vecs[:, np.argsort(vals)[-d:]]  # top d
-        # C0-metric orthonormalization
+        M = 0.5 * (M + M.T)
+        vals, vecs = eigh(M)  # ascending
+        V = vecs[:, np.argsort(vals)[-d:]]
         Q, _ = np.linalg.qr(V)
         V = Q
     else:
-        # CCA-like whitening: eig(C0) = Vc0 diag(w) Vc0^T
         w, Vc0 = eigh(C0)
         w = np.maximum(w, ridge)
         Wm12 = Vc0 @ np.diag(1.0/np.sqrt(w)) @ Vc0.T
         Mcca = Wm12 @ C1 @ Wm12
-        # keep it real symmetric before eig
         M = 0.5 * (Mcca + Mcca.T)
         vals, vecs = eigh(M)
-        V = Wm12 @ vecs[:, np.argsort(vals)[-d:]]  # map back to original coords
+        V = Wm12 @ vecs[:, np.argsort(vals)[-d:]]
 
     Z = X @ V
     return Z.astype(np.float32), V.astype(np.float32)
-
 
 def make_embedding(FR_sec, method="pca", n_components=None, random_state=None, allow_2d_input=False):
     X = _std_nan_robust(FR_sec)
@@ -177,7 +169,7 @@ def make_embedding(FR_sec, method="pca", n_components=None, random_state=None, a
     # --- DCA-lite (lag-1 predictive components) ---
     if method in ("dca1", "dca1_sym"):
         d = n_components if n_components is not None else min(10, X.shape[1])
-        symmetric = (method == "dca1_sym")   # SFA-like vs CCA-like
+        symmetric = (method == "dca1_sym")
         Z, V = _time_lagged_projection(X, d=d, lag=1, ridge=1e-6, symmetric=symmetric)
         return Z.astype(np.float32), {
             "method": method,
@@ -205,7 +197,6 @@ def make_embedding(FR_sec, method="pca", n_components=None, random_state=None, a
         return Z.astype(np.float32), {"method":method,"n_components":2}
 
     raise ValueError(f"Unknown DR method: {method}")
-
 
 def choose_latent_dim(Z_raw, FR_sec, strategy, fixed=None, cap=20, variance_goal=0.90, rule_mult=1.0):
     d_in = Z_raw.shape[1]
@@ -264,7 +255,6 @@ def apply_srnn_patches():
         num_layers = getattr(self.rnn, "num_layers", 1)
         hidden_size = getattr(self.rnn, "hidden_size", None)
         if hidden_size is None:
-            # fallback: derive from a tiny forward pass without hx
             h_seq_tmp, _ = self.rnn(x[:, :1, :])
             hidden_size = h_seq_tmp.size(-1)
         h0 = torch.zeros(num_layers * num_dirs, B, hidden_size, device=x.device, dtype=x.dtype).contiguous()
@@ -307,7 +297,7 @@ def apply_srnn_patches():
             A = A - torch.logsumexp(A, dim=2, keepdim=True)
             p_s[:, t] = A
             x_step = x[:, t-1:t, :].contiguous()
-            h0     = h_samp[:, t-1, :].contiguous().unsqueeze(0)  # (1, B, H)
+            h0     = h_samp[:, t-1, :].contiguous().unsqueeze(0)
             for k in range(K):
                 out_k, _ = self.rnns[k](x_step, h0)
                 mean_h = out_k[:, 0, :]
@@ -322,12 +312,11 @@ def apply_srnn_patches():
     _Gen.forward = _gen_forward_footshock
     return _Inf, _Gen
 
-
 # Trainer
 def fit_single_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
                     *, K_states=3, latent_dim=None, latent_dim_strategy="input_dim_cap",
                     variance_goal=0.90, latent_cap=20, latent_fixed=None,
-                    kappa=0.0, num_iters=300, window_size=100, batch_size=128,stride=1,
+                    kappa=0.0, num_iters=300, window_size=100, batch_size=128, stride=1,
                     lr=1e-3, seed=0, overwrite=False, verbose=True,
                     ms_per_sample=None, rate_mode="mean",
                     dr_method="pca", dr_n_components=None, dr_random_state=None,
@@ -370,7 +359,8 @@ def fit_single_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
                                        fixed=latent_fixed, cap=latent_cap, variance_goal=variance_goal)
         if verbose: print(f"latent_dim → {latent_dim} (input d={d_in}, strategy={latent_dim_strategy}, DR={dr_meta['method']})")
 
-    ds = NeuralDataset(Zz.T, u_sec, window_size=window_size)
+    # ← stride wired in here
+    ds = NeuralDataset(Zz.T, u_sec, window_size=window_size, stride=stride)
     loader = DataLoader(
         ds,
         batch_size=batch_size,
@@ -454,7 +444,7 @@ def fit_single_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
     np.save(save_dir / "footshock.npy", u_sec)
     np.save(save_dir / "X_dr.npy",   Zz)
     with open(save_dir / "dr_meta.json", "w") as f:
-        json.dump({"method": dr_meta["method"], "n_components": int(dr_meta["n_components"])}, f, indent=2)
+        json.dump(dr_meta, f, indent=2)  # save full DR metadata
 
     # Plot ELBO (sign-corrected)
     plt.figure(); plt.plot(-np.array(losses))
@@ -473,7 +463,7 @@ def run_fit_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
                  K_states: int, seed: int, kappa: float,
                  *, dr_method="pca", dr_n_components=None, dr_random_state=None,
                  latent_dim_strategy="input_dim_cap", variance_goal=0.90, latent_cap=20, latent_fixed=None,
-                 num_iters=300, window_size=100, batch_size=128, lr=1e-3,
+                 num_iters=300, window_size=100, batch_size=128, lr=1e-3, stride=1,
                  overwrite=False, verbose=True, device: str | None = None):
     try:
         Path(save_dir).parent.mkdir(parents=True, exist_ok=True)
@@ -482,7 +472,7 @@ def run_fit_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
         out = fit_single_srnn(
             h5_path=h5_path, csv_path=csv_path, save_dir=save_dir,
             kappa=kappa, K_states=K_states, num_iters=num_iters,
-            window_size=window_size, batch_size=batch_size, lr=lr,
+            window_size=window_size, batch_size=batch_size, lr=lr, stride=stride,
             seed=seed, overwrite=overwrite, verbose=verbose,
             dr_method=dr_method, dr_n_components=dr_n_components, dr_random_state=dr_random_state,
             latent_dim=None, latent_dim_strategy=latent_dim_strategy,
@@ -522,7 +512,7 @@ def run_kappa_sweep(*, rat: int, data_root: str | Path, outputs_root: str | Path
             dr_method=dr_method, dr_n_components=dr_n, dr_random_state=seed,
             latent_dim_strategy=latent_strategy, variance_goal=variance_goal,
             latent_cap=latent_cap, latent_fixed=latent_dim,
-            num_iters=num_iters, window_size=window_size, batch_size=batch_size, lr=lr,
+            num_iters=num_iters, window_size=window_size, batch_size=batch_size, lr=lr, stride=1,
             overwrite=overwrite, verbose=verbose
         )
         results.append({"kappa": kappa, "seed": seed, "status": info["status"], "path": info["path"]})
@@ -558,4 +548,5 @@ if __name__ == "__main__":
         num_iters=args.iters, window_size=args.window, batch_size=args.batch, lr=args.lr,
         overwrite=args.overwrite, suffix="responsive"
     )
+
 
