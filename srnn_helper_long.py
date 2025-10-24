@@ -223,15 +223,33 @@ def make_embedding(FR_sec, method="pca", n_components=None, random_state=None, a
         return Z.astype(np.float32), {"method":method, "n_components":int(Z.shape[1])}
 
     # --- DCA-lite (lag-1 predictive components) ---
-    if method in ("dca1", "dca1_sym"):
-        d = n_components if n_components is not None else min(10, X.shape[1])
-        symmetric = (method == "dca1_sym")
+if method in ("dca1", "dca1_sym"):
+    symmetric = (method == "dca1_sym")
+    if n_components is None:
+        # auto-pick dimensionality from predictive spectrum
+        Z, V, d_auto, eigvals = _dca_auto_select(
+            X, lag=1, ridge=1e-6, symmetric=symmetric,
+            variance_goal=0.90, cap=20, min_d=2
+        )
+        return Z.astype(np.float32), {
+            "method": method,
+            "n_components": int(d_auto),
+            "lag": 1,
+            "symmetric": bool(symmetric),
+            "auto": True,
+            "variance_goal": 0.90,
+            "cap": 20
+        }
+    else:
+        # user-specified number of components
+        d = int(n_components)
         Z, V = _time_lagged_projection(X, d=d, lag=1, ridge=1e-6, symmetric=symmetric)
         return Z.astype(np.float32), {
             "method": method,
             "n_components": int(Z.shape[1]),
             "lag": 1,
-            "symmetric": bool(symmetric)
+            "symmetric": bool(symmetric),
+            "auto": False
         }
 
     # --- 2-D viz methods (not ideal as SRNN inputs) ---
