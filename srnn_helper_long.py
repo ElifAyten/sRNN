@@ -247,11 +247,12 @@ def apply_srnn_patches():
     _Gen.forward = _gen_forward_footshock
     return _Inf, _Gen
 
+
 # Trainer
 def fit_single_srnn(h5_path: Path, csv_path: Path, save_dir: Path,
                     *, K_states=3, latent_dim=None, latent_dim_strategy="input_dim_cap",
                     variance_goal=0.90, latent_cap=20, latent_fixed=None,
-                    kappa=0.0, num_iters=300, window_size=100, batch_size=128,
+                    kappa=0.0, num_iters=300, window_size=100, batch_size=128,stride=1,
                     lr=1e-3, seed=0, overwrite=False, verbose=True,
                     ms_per_sample=None, rate_mode="mean",
                     dr_method="pca", dr_n_components=None, dr_random_state=None,
