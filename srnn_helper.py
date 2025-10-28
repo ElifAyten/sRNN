@@ -363,7 +363,7 @@ class TrainConfig:
     dr_random_state: Optional[int] = 0
 
     # model
-    K_states: int = 5
+    K_states: int = 3
     latent_dim: int = 8
     kappa: float = 0.0
 
