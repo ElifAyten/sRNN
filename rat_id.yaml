@@ -10,7 +10,7 @@ data:
   subset: "responsive"                                       # or "all" if you want all neurons
 
 model:
-  K_states: 5
+  K_states: 3
   latent_dim_strategy: "fixed"
   latent_fixed: 8
   kappa_values: [0.0, 0.5, 1.0, 2.0]   # values for κ sweep (model smoothness)
