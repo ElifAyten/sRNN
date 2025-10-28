@@ -32,7 +32,7 @@ import matplotlib.pyplot as plt
 # =========================
 # Defaults (tune to Drive)
 # =========================
-DEFAULT_DATA_ROOT = Path("/content/drive/MyDrive/Rat-Data-hdf5")
+DEFAULT_DATA_ROOT = Path("/content/drive/MyDrive")
 DEFAULT_OUTPUTS_ROOT = Path("/content/drive/MyDrive/sRNN/sRNN-Model-Outputs")
 
 
@@ -57,20 +57,12 @@ def get_device() -> str:
 # Paths
 # =========================
 def h5_path_for_rat(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
-    """Your raw HDF5 per-rat file."""
     root = Path(data_root)
-    # edit if your naming is different:
-    return root / f"Rat{rid}" / "NpxFiringRate_Behavior_SBL_10msBINS_0smoothing.hdf5"
-
+    return root / "Rat-Data-hdf5" / f"Rat{rid}" / "NpxFiringRate_Behavior_SBL_10msBINS_0smoothing.hdf5"
 
 def csv_path_responsive_all(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
-    """Your precomputed wide CSV of responsive units for that rat (T x N)."""
-    # Customize this if your CSVs live elsewhere:
-    return (
-        Path(data_root)
-        / f"Rat{rid}"
-        / "responsive_rates_raw.csv"
-    )
+    root = Path(data_root)
+    return root / "Sub-Data" / "Only-Responsive" / f"Rat{rid}" / f"area_splits_rat{rid}_responsive" / "responsive_rates_raw.csv"
 
 
 def base_model_dir(rid: int, outputs_root: Path = DEFAULT_OUTPUTS_ROOT) -> Path:
