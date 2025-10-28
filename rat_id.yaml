@@ -1,18 +1,18 @@
 experiment:
-  name: "rat16_dca1_h8_k5"
-  description: "Train SRNN on Rat16 with DCA(8) and K=5."
+  name: "rat16_dca1_h8_k3"
+  description: "Train SRNN on Rat16 with DCA(8) and K=3."
   seed: 0
 
 data:
   rat_id: 16
-  data_root: "/content/drive/MyDrive/rSLDS"                         # parent of Rat-Data-hdf5 and Sub-Data
+  data_root: "/content/drive/MyDrive/rSLDS"
   outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
   subset: "responsive"
+  # h5_optional: true   # (optional; default is true)
 
 model:
   K_states: 3
   latent_dim: 8
-  # pick a single kappa for a run OR give multiple and we’ll take the first:
   kappa_values: [0.0, 0.5, 1.0, 2.0]
 
 dr:
@@ -28,6 +28,8 @@ training:
   overwrite: true
   verbose: true
   test_split: 0.2
+  ms_per_sample: 10        # <— IMPORTANT for CSV-only
+  rate_mode: "mean"        # "mean" or "sum" for downsample
 
 initialization:
   warmup_epochs: 200
