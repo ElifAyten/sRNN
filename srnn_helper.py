@@ -56,9 +56,9 @@ def get_device() -> str:
 # =========================
 # Paths
 # =========================
-"""def h5_path_for_rat(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
+def h5_path_for_rat(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
     root = Path(data_root)
-    return root / "Rat-Data-hdf5" / f"Rat{rid}" / "NpxFiringRate_Behavior_SBL_10msBINS_0smoothing.hdf5""""
+    return root / "Rat-Data-hdf5" / f"Rat{rid}" / "NpxFiringRate_Behavior_SBL_10msBINS_0smoothing.hdf5
 
 def csv_path_responsive_all(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
     root = Path(data_root)
@@ -351,11 +351,13 @@ def apply_srnn_patches():
 # =========================
 @dataclass
 class TrainConfig:
+    class TrainConfig:
     # data
     rat_id: int
     data_root: Path = DEFAULT_DATA_ROOT
     outputs_root: Path = DEFAULT_OUTPUTS_ROOT
     subset_name: str = "responsive"  # for naming only
+    h5_optional: bool = True  # <— allow CSV-only runs by default
 
     # DR
     dr_method: str = "dca1"
