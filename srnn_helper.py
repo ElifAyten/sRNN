@@ -317,7 +317,8 @@ def apply_srnn_patches():
         # Gaussian h likelihood around state-conditioned prediction
         if not hasattr(self, "std_h"):
             self.std_h = 1e-2
-        const_h = float(-0.5 * (H * np.log(2 * np.pi * (self.std_h ** 2)))))
+        const_h = float(-0.5 * (H * np.log(2 * np.pi * (self.std_h ** 2))))
+
 
         p_s = torch.full((B, T, K, K), -1e8, device=device)
         p_h = torch.zeros(B, T, K, device=device)
