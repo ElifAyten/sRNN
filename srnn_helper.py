@@ -354,14 +354,18 @@ def apply_srnn_patches():
 # Training / evaluation
 # =========================
 @dataclass
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+@dataclass
 class TrainConfig:
-    class TrainConfig:
     # data
     rat_id: int
     data_root: Path = DEFAULT_DATA_ROOT
     outputs_root: Path = DEFAULT_OUTPUTS_ROOT
     subset_name: str = "responsive"  # for naming only
-    h5_optional: bool = True  # <— allow CSV-only runs by default
+    h5_optional: bool = True         # allow CSV-only runs by default
 
     # DR
     dr_method: str = "dca1"
@@ -392,7 +396,6 @@ class TrainConfig:
     # misc
     ms_per_sample: Optional[int] = None
     rate_mode: str = "mean"
-
 
 def _init_weights(module):
     if isinstance(module, nn.Linear):
@@ -470,7 +473,8 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     FRz_full = np.nan_to_num((FR_sec - mu_full) / sd_full, 0.0, 0.0, 0.0)
 
     # ----- DR -----
-    Z_raw, dr_meta = make_embedding(FR_sec, method=cfg.dr_method, n_components=cfg.dr_n, random_state=cfg.dr_random_state)
+    Z_raw, dr_meta = make_embedding(
+    FR_sec, method=cfg.dr_method, n_components=cfg.dr_n, random_state=cfg.dr_random_state)
     Zz = StandardScaler().fit_transform(Z_raw).astype(np.float32)  # (T, d_in)
     d_in = Zz.shape[1]
     if cfg.verbose:
