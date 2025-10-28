@@ -48,14 +48,13 @@ def set_roots(data_root: str | Path = None, outputs_root: str | Path = None):
 
 
 def get_device() -> str:
-    if torch.cuda.is_available(): return "cuda"
-    if torch.backends.mps.is_available(): return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
     return "cpu"
 
 
-# =========================
-# Paths
-# =========================
 # =========================
 # Paths
 # =========================
@@ -66,15 +65,28 @@ def h5_path_for_rat(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
 
 def csv_path_responsive_all(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
     root = Path(data_root)
-    return root / "Sub-Data" / "Only-Responsive" / f"Rat{rid}" / f"area_splits_rat{rid}_responsive" / "responsive_rates_raw.csv"
+    return (
+        root
+        / "Sub-Data"
+        / "Only-Responsive"
+        / f"Rat{rid}"
+        / f"area_splits_rat{rid}_responsive"
+        / "responsive_rates_raw.csv"
+    )
 
 
 def base_model_dir(rid: int, outputs_root: Path = DEFAULT_OUTPUTS_ROOT) -> Path:
     return Path(outputs_root) / f"Rat{rid}-Model-Outputs"
 
 
-def run_dir(rid: int, suffix: str, K: int, seed: int, kappa: float,
-            outputs_root: Path = DEFAULT_OUTPUTS_ROOT) -> Path:
+def run_dir(
+    rid: int,
+    suffix: str,
+    K: int,
+    seed: int,
+    kappa: float,
+    outputs_root: Path = DEFAULT_OUTPUTS_ROOT,
+) -> Path:
     name = f"models_Rat{rid}_{suffix}_K{K}_seed{seed}_kappa{kappa:g}"
     return base_model_dir(rid, outputs_root) / name
 
@@ -116,7 +128,7 @@ def downsample_FR_and_u(FR_TN, u_T1, *, ms_per_sample=10, rate_mode="mean"):
     FR_TN = np.nan_to_num(FR_TN, nan=0.0, posinf=0.0, neginf=0.0)
     u_T1 = np.nan_to_num(u_T1, nan=0.0, posinf=0.0, neginf=0.0)
     factor = int(round(1000 / ms_per_sample))  # samples per 1 s
-    if factor <= 0:
+    if factor <= 0 or ms_per_sample > 1000:
         raise ValueError("ms_per_sample must be > 0 and <= 1000.")
     T, N = FR_TN.shape
     if u_T1.shape[0] != T:
@@ -156,7 +168,8 @@ def _time_lagged_projection(X_TN, d=8, lag=1, ridge=1e-6, symmetric=False):
         M = 0.5 * (M + M.T)
         vals, vecs = eigh(M)
         V = vecs[:, np.argsort(vals)[-d:]]
-        Q, _ = np.linalg.qr(V); V = Q
+        Q, _ = np.linalg.qr(V)
+        V = Q
     else:
         w, Vc0 = eigh(C0)
         w = np.maximum(w, ridge)
@@ -177,7 +190,7 @@ def make_embedding(FR_sec, method="dca1", n_components=8, random_state=None):
         meta = {"method": "pca", "n_components": int(Z.shape[1])}
         return Z.astype(np.float32), meta
     elif method in ("dca1", "dca1_sym"):
-        symmetric = (method == "dca1_sym")
+        symmetric = method == "dca1_sym"
         Z, _ = _time_lagged_projection(X, d=n_components, lag=1, ridge=1e-6, symmetric=symmetric)
         return Z.astype(np.float32), {"method": method, "n_components": int(Z.shape[1]), "lag": 1}
     else:
@@ -189,7 +202,8 @@ def make_embedding(FR_sec, method="dca1", n_components=8, random_state=None):
 # =========================
 class NeuralWindows(Dataset):
     """Yields (window_x, window_u) with shape (W, d_in) and (W, 1)."""
-    def __init__(self, Z_Td: np.ndarray, u_T1: np.ndarray, window:int=100, stride:int=1):
+
+    def __init__(self, Z_Td: np.ndarray, u_T1: np.ndarray, window: int = 100, stride: int = 1):
         X = np.asarray(Z_Td, np.float32)
         u = np.asarray(u_T1, np.float32)
         if u.ndim == 1:
@@ -223,7 +237,6 @@ def make_time_split_indices(T: int, window: int, stride: int, test_frac: float) 
     """
     num_windows = 1 + (T - window) // stride
     cut_t = int(math.floor((1.0 - test_frac) * T))
-    # Find first window whose end > cut_t goes to test
     train_idx, test_idx = [], []
     for i in range(num_windows):
         s = i * stride
@@ -315,7 +328,6 @@ def apply_srnn_patches():
             self.std_h = 1e-2
         const_h = float(-0.5 * (H * np.log(2 * np.pi * (self.std_h ** 2))))
 
-
         p_s = torch.full((B, T, K, K), -1e8, device=device)
         p_h = torch.zeros(B, T, K, device=device)
         eye = torch.eye(K, device=device).view(1, K, K).expand(B, K, K)
@@ -332,7 +344,7 @@ def apply_srnn_patches():
             A = A - torch.logsumexp(A, dim=2, keepdim=True)
             p_s[:, t] = A
 
-            x_step = x[:, t - 1:t, :].contiguous()
+            x_step = x[:, t - 1 : t, :].contiguous()
             h0 = h_samp[:, t - 1, :].contiguous().unsqueeze(0)  # (1,B,H)
             for k in range(K):
                 out_k, _ = self.rnns[k](x_step, h0)
@@ -341,7 +353,7 @@ def apply_srnn_patches():
                 p_h[:, t, k] = const_h - (diff.pow(2).sum(dim=1) / (2 * (self.std_h ** 2)))
 
         p0 = torch.nan_to_num(p0, -1e-8, -1e8, -1e-8)
-        p_s = torch.nan_to_num(p_s, -1e-8, -1e8, -1e-8)
+        p_s = torch.nan_to_num(p_s, -1e-8, -1e-8, -1e-8)
         p_h = torch.nan_to_num(p_h, -1e-8, -1e-8, -1e-8)
         return p0, p_s, p_h, None, None, None, None, None
 
@@ -354,18 +366,13 @@ def apply_srnn_patches():
 # Training / evaluation
 # =========================
 @dataclass
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional
-
-@dataclass
 class TrainConfig:
     # data
     rat_id: int
     data_root: Path = DEFAULT_DATA_ROOT
     outputs_root: Path = DEFAULT_OUTPUTS_ROOT
     subset_name: str = "responsive"  # for naming only
-    h5_optional: bool = True         # allow CSV-only runs by default
+    h5_optional: bool = True  # allow CSV-only runs by default
 
     # DR
     dr_method: str = "dca1"
@@ -373,7 +380,7 @@ class TrainConfig:
     dr_random_state: Optional[int] = 0
 
     # model
-    K_states: int = 3
+    K_states: int = 5
     latent_dim: int = 8
     kappa: float = 0.0
 
@@ -390,12 +397,13 @@ class TrainConfig:
     verbose: bool = True
 
     # regularization
-    lambda_entropy: float = 1.0e-3     # encourage transition entropy
-    lambda_usage: float = 1.0e-2       # encourage state usage in warm-up
+    lambda_entropy: float = 1.0e-3  # encourage transition entropy
+    lambda_usage: float = 1.0e-2  # encourage state usage in warm-up
 
     # misc
     ms_per_sample: Optional[int] = None
     rate_mode: str = "mean"
+
 
 def _init_weights(module):
     if isinstance(module, nn.Linear):
@@ -422,11 +430,11 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     csvp = csv_path_responsive_all(cfg.rat_id, cfg.data_root)
     if not csvp.exists():
         return {"status": "missing_csv", "msg": str(csvp)}
-    
+
     have_h5 = h5p.exists()
     if (not have_h5) and (not cfg.h5_optional):
         return {"status": "missing_h5", "msg": str(h5p)}
-    
+
     # ----- load CSV -----
     df = read_wide_csv(csvp)
     if "time_s" in df.columns:
@@ -434,28 +442,26 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     else:
         # if H5 exists we’ll use its time, otherwise synthesize from ms_per_sample
         t = None
-    
+
     FR_TN = df.values.astype(float)
-    
+
     # ----- load footshock/time from H5 if available -----
     shock_times = None
     if have_h5:
-        import h5py
         with h5py.File(h5p, "r") as h5:
             if t is None and "time" in h5:
                 t = h5["time"][...]
             if "footshock_times" in h5:
                 shock_times = h5["footshock_times"][...]
-    
+
     # if still no time vector, synthesize from ms_per_sample (require YAML to set it)
     if t is None:
         if cfg.ms_per_sample is None:
             raise ValueError("CSV-only mode needs training.ms_per_sample set in YAML")
         dt = cfg.ms_per_sample / 1000.0
         t = np.arange(FR_TN.shape[0]) * dt
-    
-    footshock = build_footshock_regressor(t, shock_times)
 
+    footshock = build_footshock_regressor(t, shock_times)
 
     # ----- resample -----
     if cfg.ms_per_sample is None:
@@ -474,7 +480,8 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
 
     # ----- DR -----
     Z_raw, dr_meta = make_embedding(
-    FR_sec, method=cfg.dr_method, n_components=cfg.dr_n, random_state=cfg.dr_random_state)
+        FR_sec, method=cfg.dr_method, n_components=cfg.dr_n, random_state=cfg.dr_random_state
+    )
     Zz = StandardScaler().fit_transform(Z_raw).astype(np.float32)  # (T, d_in)
     d_in = Zz.shape[1]
     if cfg.verbose:
@@ -521,7 +528,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         h_samp, q_dist = infer(x)
         p0, p_s, p_h, *_ = gen(x, u, h_samp)
 
-        log_q = q_dist.log_prob(h_samp).sum(dim=1)                      # (B,)
+        log_q = q_dist.log_prob(h_samp).sum(dim=1)  # (B,)
         elbo = (p0.sum(1) + p_s.sum((1, 2, 3)) + p_h.sum((1, 2)) - log_q).mean()
 
         trans_probs = torch.exp(p_s).clamp_min(1e-12)
@@ -533,9 +540,9 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
             # encourage roughly uniform marginal usage over states
             with torch.no_grad():
                 # posterior approx for z_t: softmax over outgoing transitions
-                post = torch.softmax(p_s, dim=-1)                       # (B,T,K,K)
-                marg = post.mean(dim=(0, 1))                            # (K,K)
-                usage = marg.sum(dim=1) / marg.sum()                    # (K,)
+                post = torch.softmax(p_s, dim=-1)  # (B,T,K,K)
+                marg = post.mean(dim=(0, 1))  # (K,K)
+                usage = marg.sum(dim=1) / marg.sum()  # (K,)
             target = torch.full_like(usage, 1.0 / usage.numel())
             usage_loss = F.kl_div(torch.log(usage + 1e-12), target, reduction="sum")
             loss = loss + cfg.lambda_usage * usage_loss
@@ -545,17 +552,20 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     # ----- train -----
     losses, elbos = [], []
     for epoch in range(1, cfg.num_iters + 1):
-        infer.train(); gen.train()
+        infer.train()
+        gen.train()
         # LR warmup for first 10 epochs
         base_lr = cfg.lr
         for g in opt.param_groups:
             g["lr"] = (base_lr * epoch / 10.0) if epoch <= 10 else g.get("lr", base_lr)
-        total = 0.0; total_elbo = 0.0; nb = 0
+        total = 0.0
+        total_elbo = 0.0
+        nb = 0
         for xb, ub in train_loader:
             x = xb.to(device, non_blocking=True)
             u = ub.to(device, non_blocking=True)
             opt.zero_grad()
-            warm = (epoch <= cfg.warmup_epochs)
+            warm = epoch <= cfg.warmup_epochs
             loss, elbo = _batch_step(x, u, epoch, warmup=warm)
             if torch.isnan(loss):
                 continue
@@ -566,6 +576,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
             total_elbo += float(elbo.item())
             nb += 1
         if nb == 0:
+            warnings.warn("No batches were processed. Check window/stride and dataset length.")
             break
         losses.append(total / nb)
         elbos.append(total_elbo / nb)
@@ -577,13 +588,20 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         # periodic checkpoints
         if epoch % max(1, cfg.num_iters // 6) == 0:
             torch.save(
-                {"epoch": epoch, "infer": infer.state_dict(), "gen": gen.state_dict(),
-                 "opt": opt.state_dict(), "loss_history": losses, "elbo_history": elbos},
-                save_dir / f"epoch_{epoch}.pth"
+                {
+                    "epoch": epoch,
+                    "infer": infer.state_dict(),
+                    "gen": gen.state_dict(),
+                    "opt": opt.state_dict(),
+                    "loss_history": losses,
+                    "elbo_history": elbos,
+                },
+                save_dir / f"epoch_{epoch}.pth",
             )
 
     # ----- inference snapshot on train loader (for usage/dwell) -----
-    infer.eval(); gen.eval()
+    infer.eval()
+    gen.eval()
     with torch.no_grad():
         all_h, all_z = [], []
         for xb, ub in train_loader:
@@ -613,31 +631,35 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         for v in z_flat:
             v = int(v)
             if cur is None or v == cur:
-                run += 1; cur = v
+                run += 1
+                cur = v
             else:
-                runs.append(run); cur = v; run = 1
-        if run > 0: runs.append(run)
+                runs.append(run)
+                cur = v
+                run = 1
+        if run > 0:
+            runs.append(run)
         if runs:
             dwell_mean = float(np.mean(runs))
             dwell_median = float(np.median(runs))
 
     # ----- post-hoc linear decoder h->Z (train on train windows) -----
-    # collect (h, Z) pairs from training windows to fit ridge W,b: Z ≈ h W + b
     H_list, Z_list = [], []
     with torch.no_grad():
         for xb, ub in train_loader:
             x = xb.to(device, non_blocking=True)
             u = ub.to(device, non_blocking=True)
-            h_samp, _ = infer(x)                  # (B,W,H)
+            h_samp, _ = infer(x)  # (B,W,H)
             H_list.append(h_samp.cpu().numpy().reshape(-1, cfg.latent_dim))
             Z_list.append(x.cpu().numpy().reshape(-1, d_in))
     if H_list:
-        H_mat = np.concatenate(H_list, axis=0)           # (M,H)
-        Z_mat = np.concatenate(Z_list, axis=0)           # (M,d_in)
+        H_mat = np.concatenate(H_list, axis=0)  # (M,H)
+        Z_mat = np.concatenate(Z_list, axis=0)  # (M,d_in)
         lam = 1e-3
         H_aug = np.concatenate([H_mat, np.ones((H_mat.shape[0], 1))], axis=1)  # bias
-        W_full = np.linalg.lstsq(H_aug.T @ H_aug + lam * np.eye(cfg.latent_dim + 1),
-                                 H_aug.T @ Z_mat, rcond=None)[0]               # ((H+1), d_in)
+        W_full = np.linalg.lstsq(
+            H_aug.T @ H_aug + lam * np.eye(cfg.latent_dim + 1), H_aug.T @ Z_mat, rcond=None
+        )[0]  # ((H+1), d_in)
         W = W_full[:-1, :]
         b = W_full[-1:, :]
     else:
@@ -652,18 +674,18 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
                 x = xb.to(device, non_blocking=True)  # (B,W,d_in) — Z-space input
                 u = ub.to(device, non_blocking=True)
                 B, Ww, Din = x.shape
-                h_samp, _ = infer(x)                  # (B,W,H)
+                h_samp, _ = infer(x)  # (B,W,H)
                 # deterministic rollout from last context point
                 for Kpred in horizons:
                     if Kpred >= Ww:
                         continue
                     # start at t0 = Ww - Kpred - 1, use that as context
                     t0 = Ww - Kpred - 1
-                    h_t = h_samp[:, t0, :]            # (B,H)
-                    x_t = x[:, t0, :].contiguous()    # (B,d_in)
+                    h_t = h_samp[:, t0, :]  # (B,H)
+                    x_t = x[:, t0, :].contiguous()  # (B,d_in)
                     preds = []
                     for t in range(t0 + 1, t0 + 1 + Kpred):
-                        Ah = gen.trans_h(h_t)                 # (B, K*K)
+                        Ah = gen.trans_h(h_t)  # (B, K*K)
                         Au = gen.trans_u(u[:, t, :])
                         A = (Ah + Au).view(B, gen.K, gen.K)
                         A = A - torch.logsumexp(A, dim=2, keepdim=True)
@@ -672,10 +694,10 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
                         # run the chosen state's rnn one step
                         out_list = []
                         for k in range(gen.K):
-                            mask = (z_next == k)
+                            mask = z_next == k
                             if mask.any():
-                                x_step = x_t[mask].unsqueeze(1)      # (b_k,1,d_in)
-                                h0 = h_t[mask].unsqueeze(0)          # (1,b_k,H)
+                                x_step = x_t[mask].unsqueeze(1)  # (b_k,1,d_in)
+                                h0 = h_t[mask].unsqueeze(0)  # (1,b_k,H)
                                 out_k, _ = gen.rnns[k](x_step, h0)
                                 out_list.append((mask, out_k[:, 0, :]))
                         # stitch
@@ -689,7 +711,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
                         h_t = h_next
                         x_t = z_pred
                     if preds:
-                        Zpred = torch.stack(preds, dim=1)               # (B,Kpred,d_in)
+                        Zpred = torch.stack(preds, dim=1)  # (B,Kpred,d_in)
                         Ztrue = x[:, t0 + 1 : t0 + 1 + Kpred, :]
                         mse = torch.mean((Zpred - Ztrue) ** 2, dim=(0, 1, 2)).item()
                         mses[int(Kpred)].append(mse)
@@ -700,10 +722,10 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     # ----- save artifacts -----
     np.save(save_dir / "elbos.npy", np.array(elbos, dtype=np.float32))
     np.save(save_dir / "losses.npy", np.array(losses, dtype=np.float32))
-    np.save(save_dir / "x_hat.npy", XH)            # inferred h on train windows
-    np.save(save_dir / "z_hat.npy", ZH)            # hard states on train windows
-    np.save(save_dir / "FR_z.npy", FRz_full)       # z-scored full signal
-    np.save(save_dir / "X_dr.npy", Zz)             # reduced signal (full T)
+    np.save(save_dir / "x_hat.npy", XH)  # inferred h on train windows
+    np.save(save_dir / "z_hat.npy", ZH)  # hard states on train windows
+    np.save(save_dir / "FR_z.npy", FRz_full)  # z-scored full signal
+    np.save(save_dir / "X_dr.npy", Zz)  # reduced signal (full T)
     np.save(save_dir / "footshock.npy", u_sec)
 
     with open(save_dir / "dr_meta.json", "w") as f:
@@ -716,9 +738,12 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     # quick ELBO plot (sign so larger=better)
     plt.figure()
     plt.plot(-np.array(losses), label="ELBO (approx)")
-    plt.xlabel("epoch"); plt.ylabel("ELBO ↑")
-    plt.legend(); plt.tight_layout()
-    plt.savefig(save_dir / "elbo.png"); plt.close()
+    plt.xlabel("epoch")
+    plt.ylabel("ELBO ↑")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(save_dir / "elbo.png")
+    plt.close()
 
     # usage bar
     if usage:
@@ -728,13 +753,19 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         plt.bar(keys, vals)
         plt.ylabel("state usage")
         plt.tight_layout()
-        plt.savefig(save_dir / "state_usage.png"); plt.close()
+        plt.savefig(save_dir / "state_usage.png")
+        plt.close()
 
     # finalize checkpoint
     torch.save(
-        {"epoch": cfg.num_iters, "infer": infer.state_dict(), "gen": gen.state_dict(),
-         "loss_history": losses, "elbo_history": elbos},
-        save_dir / "final_checkpoint.pth"
+        {
+            "epoch": cfg.num_iters,
+            "infer": infer.state_dict(),
+            "gen": gen.state_dict(),
+            "loss_history": losses,
+            "elbo_history": elbos,
+        },
+        save_dir / "final_checkpoint.pth",
     )
 
     out = {
@@ -754,25 +785,27 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
 # =========================
 # Simple wrapper utilities
 # =========================
-def run_fit_srnn(h5_path: Path,
-                 csv_path: Path,
-                 save_dir: Path,
-                 K_states: int,
-                 seed: int,
-                 kappa: float,
-                 *,
-                 dr_method="dca1",
-                 dr_n_components=8,
-                 dr_random_state=None,
-                 latent_dim=8,
-                 num_iters=2000,
-                 warmup_epochs=200,
-                 window_size=100,
-                 batch_size=128,
-                 lr=1e-4,
-                 overwrite=False,
-                 verbose=True,
-                 device: str | None = None):
+def run_fit_srnn(
+    h5_path: Path,
+    csv_path: Path,
+    save_dir: Path,
+    K_states: int,
+    seed: int,
+    kappa: float,
+    *,
+    dr_method="dca1",
+    dr_n_components=8,
+    dr_random_state=None,
+    latent_dim=8,
+    num_iters=2000,
+    warmup_epochs=200,
+    window_size=100,
+    batch_size=128,
+    lr=1e-4,
+    overwrite=False,
+    verbose=True,
+    device: str | None = None,
+):
     """
     Backwards-compatible thin wrapper (kept so your existing scripts don't break).
     Uses time split=0.2 by default and stride=1.
@@ -795,32 +828,31 @@ def run_fit_srnn(h5_path: Path,
         lr=lr,
         seed=seed,
         overwrite=overwrite,
-        verbose=verbose
+        verbose=verbose,
     )
-    # For this wrapper we still derive Z etc. inside fit_srnn_with_split-like path,
-    # but we must point to your rat_id functions normally; to keep things simple
-    # recommend using fit_srnn_with_split with a real rat_id instead.
     return {"status": "use_fit_srnn_with_split", "msg": "Prefer TrainConfig + fit_srnn_with_split() in new code."}
 
 
-def run_kappa_sweep(*,
-                    rat: int,
-                    data_root: str | Path,
-                    outputs_root: str | Path,
-                    K: int = 3,
-                    seed: int = 0,
-                    kappa_grid=(0.0, 0.5, 1.0, 2.0),
-                    dr_method="dca1",
-                    dr_n=8,
-                    latent_dim=8,
-                    num_iters=1000,
-                    warmup_epochs=200,
-                    window_size=100,
-                    batch_size=128,
-                    lr=1e-4,
-                    overwrite=True,
-                    verbose=True,
-                    subset="responsive"):
+def run_kappa_sweep(
+    *,
+    rat: int,
+    data_root: str | Path,
+    outputs_root: str | Path,
+    K: int = 3,
+    seed: int = 0,
+    kappa_grid=(0.0, 0.5, 1.0, 2.0),
+    dr_method="dca1",
+    dr_n=8,
+    latent_dim=8,
+    num_iters=1000,
+    warmup_epochs=200,
+    window_size=100,
+    batch_size=128,
+    lr=1e-4,
+    overwrite=True,
+    verbose=True,
+    subset="responsive",
+):
     results = []
     for kappa in kappa_grid:
         cfg = TrainConfig(
@@ -853,6 +885,7 @@ def run_kappa_sweep(*,
 # =========================
 if __name__ == "__main__":
     import argparse, yaml
+
     p = argparse.ArgumentParser()
     p.add_argument("--config", type=str, required=False, help="YAML config path")
     args = p.parse_args()
@@ -873,16 +906,19 @@ if __name__ == "__main__":
             data_root=Path(data.get("data_root", DEFAULT_DATA_ROOT)),
             outputs_root=Path(data.get("outputs_root", DEFAULT_OUTPUTS_ROOT)),
             subset_name=str(data.get("subset", "responsive")),
+            h5_optional=bool(data.get("h5_optional", True)),
             dr_method=str(dr.get("method", "dca1")),
             dr_n=int(dr.get("n_components", 8)),
             dr_random_state=dr.get("random_state", exp.get("seed", 0)),
             K_states=int(model.get("K_states", 5)),
             latent_dim=int(model.get("latent_dim", 8)),
-            kappa=float(model.get("kappa_values", [0.0])[0]) if "kappa_values" in model else float(model.get("kappa", 0.0)),
+            kappa=float(model.get("kappa_values", [0.0])[0])
+            if "kappa_values" in model
+            else float(model.get("kappa", 0.0)),
             num_iters=int(train.get("num_iters", 2000)),
             warmup_epochs=int(reg.get("warmup_epochs", 200)),
             window_size=int(train.get("window_size", 100)),
-            stride=1,
+            stride=int(train.get("stride", 1)),
             batch_size=int(train.get("batch_size", 128)),
             lr=float(train.get("lr", 1e-4)),
             seed=int(exp.get("seed", 0)),
@@ -891,6 +927,8 @@ if __name__ == "__main__":
             verbose=bool(train.get("verbose", True)),
             lambda_entropy=float(reg.get("lambda_entropy", 1e-3)),
             lambda_usage=float(reg.get("lambda_usage", 1e-2)),
+            ms_per_sample=train.get("ms_per_sample", None),
+            rate_mode=str(train.get("rate_mode", "mean")),
         )
         out = fit_srnn_with_split(cfg)
         print(json.dumps(out, indent=2))
