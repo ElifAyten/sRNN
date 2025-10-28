@@ -411,25 +411,42 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
 
     h5p = h5_path_for_rat(cfg.rat_id, cfg.data_root)
     csvp = csv_path_responsive_all(cfg.rat_id, cfg.data_root)
-    if not h5p.exists():
-        return {"status": "missing_h5", "msg": str(h5p)}
     if not csvp.exists():
         return {"status": "missing_csv", "msg": str(csvp)}
-
-    # ----- load -----
+    
+    have_h5 = h5p.exists()
+    if (not have_h5) and (not cfg.h5_optional):
+        return {"status": "missing_h5", "msg": str(h5p)}
+    
+    # ----- load CSV -----
     df = read_wide_csv(csvp)
     if "time_s" in df.columns:
         t = df.pop("time_s").values
     else:
-        with h5py.File(h5p, "r") as h5:
-            t = h5["time"][...]
-
+        # if H5 exists we’ll use its time, otherwise synthesize from ms_per_sample
+        t = None
+    
     FR_TN = df.values.astype(float)
-    with h5py.File(h5p, "r") as h5:
-        shock_times = h5.get("footshock_times")
-        shock_times = None if shock_times is None else shock_times[...]
-
+    
+    # ----- load footshock/time from H5 if available -----
+    shock_times = None
+    if have_h5:
+        import h5py
+        with h5py.File(h5p, "r") as h5:
+            if t is None and "time" in h5:
+                t = h5["time"][...]
+            if "footshock_times" in h5:
+                shock_times = h5["footshock_times"][...]
+    
+    # if still no time vector, synthesize from ms_per_sample (require YAML to set it)
+    if t is None:
+        if cfg.ms_per_sample is None:
+            raise ValueError("CSV-only mode needs training.ms_per_sample set in YAML")
+        dt = cfg.ms_per_sample / 1000.0
+        t = np.arange(FR_TN.shape[0]) * dt
+    
     footshock = build_footshock_regressor(t, shock_times)
+
 
     # ----- resample -----
     if cfg.ms_per_sample is None:
