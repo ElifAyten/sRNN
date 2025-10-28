@@ -1,0 +1,39 @@
+experiment:
+  name: "rat16_dca1_h8_k5"
+  description: "Train SRNN on Rat16 with DCA (8 components) and 5 discrete states."
+  seed: 0
+
+data:
+  rat_id: 16
+  data_root: "/content/drive/My Drive/Rat-Data-hdf5"          # where your rat data is
+  outputs_root: "/content/drive/My Drive/sRNN/sRNN-Model-Outputs"  # where to save results
+  subset: "responsive"                                       # or "all" if you want all neurons
+
+model:
+  K_states: 3
+  latent_dim_strategy: "fixed"
+  latent_fixed: 8
+  kappa_values: [0.0, 0.5, 1.0, 2.0]   # values for κ sweep (model smoothness)
+
+dr:   # dimensionality reduction settings
+  method: "dca1"        # DCA-lite or PCA
+  n_components: 8
+  random_state: 0
+
+training:
+  num_iters: 4000
+  window_size: 100
+  batch_size: 128
+  lr: 1e-4
+  overwrite: true
+  verbose: true
+  test_split: 0.2        # keep 20% for test
+  split_mode: "time"     # split last 20% of windows for test
+
+initialization:
+  warmup_epochs: 200
+  lambda_entropy: 1.0e-3
+  lambda_usage: 1.0e-2
+
+evaluation:
+  prediction_horizons: [10, 20, 30, 40]
