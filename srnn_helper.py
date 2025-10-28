@@ -32,8 +32,8 @@ import matplotlib.pyplot as plt
 # =========================
 # Defaults (tune to Drive)
 # =========================
-DEFAULT_DATA_ROOT = Path("/content/drive/MyDrive/Rat-Data-hdf5")
-DEFAULT_OUTPUTS_ROOT = Path("/content/drive/MyDrive/sRNN/sRNN-Model-Outputs")
+DEFAULT_DATA_ROOT = Path("/content/drive/My Drive/Rat-Data-hdf5")
+DEFAULT_OUTPUTS_ROOT = Path("/content/drive/My Drive/sRNN/sRNN-Model-Outputs")
 
 
 def set_roots(data_root: str | Path = None, outputs_root: str | Path = None):
