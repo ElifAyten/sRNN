@@ -5,8 +5,8 @@ experiment:
 
 data:
   rat_id: 16
-  data_root: "/content/drive/My Drive/Rat-Data-hdf5"          # where your rat data is
-  outputs_root: "/content/drive/My Drive/sRNN/sRNN-Model-Outputs"  # where to save results
+  data_root: "/content/drive/MyDrive/Rat-Data-hdf5"          # where your rat data is
+  outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"  # where to save results
   subset: "responsive"                                       # or "all" if you want all neurons
 
 model:
