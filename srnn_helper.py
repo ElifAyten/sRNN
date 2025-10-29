@@ -103,14 +103,29 @@ def read_wide_csv(csv_path: Path) -> pd.DataFrame:
         return pd.read_csv(csv_path, engine="python")
 
 
-def build_footshock_regressor(t: np.ndarray, shock_times: Optional[np.ndarray]) -> np.ndarray:
-    """Binary regressor with 1 at closest sample to each shock time."""
+def build_footshock_regressor(
+    t: np.ndarray,
+    shock_times: Optional[np.ndarray],
+    *,
+    expand_sec: float = 0.0,
+) -> np.ndarray:
+    """
+    Binary regressor with 1 around each shock time.
+    If expand_sec == 0, mark the single closest sample to each shock.
+    If expand_sec > 0, mark all samples within ±expand_sec of each shock.
+    """
     v = np.zeros_like(t, dtype=float)
     if shock_times is None or len(shock_times) == 0:
         return v[:, None]
-    idx = np.searchsorted(t, np.asarray(shock_times))
-    idx = np.clip(idx, 0, len(t) - 1)
-    v[idx] = 1.0
+    shocks = np.asarray(shock_times).ravel()
+    if expand_sec > 0.0:
+        for s in shocks:
+            mask = np.abs(t - float(s)) <= float(expand_sec)
+            v[mask] = 1.0
+    else:
+        idx = np.searchsorted(t, shocks)
+        idx = np.clip(idx, 0, len(t) - 1)
+        v[idx] = 1.0
     return v[:, None]
 
 
@@ -266,7 +281,11 @@ def apply_srnn_patches():
     - robust inference forward (no NaNs, fixed init)
     - generative forward returning log-probs for transitions/dynamics
     """
-    from sRNN.networks import InferenceNetwork as _Inf, GenerativeSRNN as _Gen
+    # try both package styles
+    try:
+        from sRNN.networks import InferenceNetwork as _Inf, GenerativeSRNN as _Gen
+    except Exception:
+        from networks import InferenceNetwork as _Inf, GenerativeSRNN as _Gen
 
     def _infer_num_dirs(rnn: nn.RNNBase) -> int:
         return 2 if getattr(rnn, "bidirectional", False) else 1
@@ -403,6 +422,7 @@ class TrainConfig:
     # misc
     ms_per_sample: Optional[int] = None
     rate_mode: str = "mean"
+    shock_expand_sec: float = 0.0     # <-- NEW: widen shock pulses by ±this many seconds
 
 
 def _init_weights(module):
@@ -435,6 +455,10 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     if (not have_h5) and (not cfg.h5_optional):
         return {"status": "missing_h5", "msg": str(h5p)}
 
+    if cfg.verbose:
+        print(f"[inputs] csv={csvp}")
+        print(f"[inputs] h5_found={have_h5} → {h5p}")
+
     # ----- load CSV -----
     df = read_wide_csv(csvp)
     if "time_s" in df.columns:
@@ -453,6 +477,12 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
                 t = h5["time"][...]
             if "footshock_times" in h5:
                 shock_times = h5["footshock_times"][...]
+        if cfg.verbose:
+            n_shocks = 0 if (shock_times is None) else int(len(shock_times))
+            print(f"[footshock] from H5 → count={n_shocks}")
+    else:
+        if cfg.verbose:
+            print("[footshock] no H5 available → will default to zeros")
 
     # if still no time vector, synthesize from ms_per_sample (require YAML to set it)
     if t is None:
@@ -461,7 +491,10 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         dt = cfg.ms_per_sample / 1000.0
         t = np.arange(FR_TN.shape[0]) * dt
 
-    footshock = build_footshock_regressor(t, shock_times)
+    # build binary regressor at native resolution
+    footshock = build_footshock_regressor(t, shock_times, expand_sec=float(cfg.shock_expand_sec))
+    if cfg.verbose:
+        print(f"[u_raw] built regressor on native grid: shape={footshock.shape}, any={bool(np.any(footshock>0))}")
 
     # ----- resample -----
     if cfg.ms_per_sample is None:
@@ -472,6 +505,10 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         print(f"↳ inferred ms_per_sample ≈ {msps} ms")
 
     FR_sec, u_sec = downsample_FR_and_u(FR_TN, footshock, ms_per_sample=msps, rate_mode=cfg.rate_mode)
+    if cfg.verbose:
+        nz = int(np.count_nonzero(u_sec))
+        uniq = np.unique(u_sec).tolist()
+        print(f"[u_1Hz] shape={u_sec.shape}, nonzero_samples={nz}, unique={uniq[:8]}")
 
     # Keep a z-scored copy of full-rate signals for later plots
     mu_full, sd_full = FR_sec.mean(0, keepdims=True), FR_sec.std(0, keepdims=True)
@@ -513,7 +550,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         ds,
         batch_size=train_bs,
         shuffle=False,
-        drop_last=False,  # <— allow last partial batch
+        drop_last=False,  # allow last partial batch
         sampler=subset_sampler(train_idx),
         pin_memory=(device == "cuda"),
         num_workers=max(0, (os.cpu_count() or 2) // 2),
@@ -522,7 +559,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         ds,
         batch_size=test_bs,
         shuffle=False,
-        drop_last=False,  # <— allow last partial batch
+        drop_last=False,  # allow last partial batch
         sampler=subset_sampler(test_idx),
         pin_memory=(device == "cuda"),
         num_workers=max(0, (os.cpu_count() or 2) // 2),
@@ -926,8 +963,10 @@ if __name__ == "__main__":
             lambda_usage=float(reg.get("lambda_usage", 1e-2)),
             ms_per_sample=train.get("ms_per_sample", None),
             rate_mode=str(train.get("rate_mode", "mean")),
+            shock_expand_sec=float(train.get("shock_expand_sec", 0.0)),
         )
         out = fit_srnn_with_split(cfg)
         print(json.dumps(out, indent=2))
     else:
         print("Pass --config configs/your_experiment.yaml")
+
