@@ -28,8 +28,8 @@ dr:
 
 training:
   num_iters: 1200
-  window_size: 50
-  stride: 10
+  window_size: 124
+  stride: 18
   batch_size: 256     # drop to 128 if OOM
   lr: 1e-4
   overwrite: true
