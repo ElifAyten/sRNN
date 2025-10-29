@@ -6,7 +6,7 @@ experiment:
 data:
   # EITHER pick a single rat_id:
   rat_id: 15
-  # OR use a list instead (uncomment below) — CLI can override:
+  # OR use a list instead (uncomment the next line) — CLI can override:
   # rats: [12, 13, 14, 15, 16]
   data_root: "/content/drive/MyDrive/rSLDS"
   outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
@@ -15,7 +15,7 @@ data:
 
 model:
   K_states: 3
-  latent_dim: 8      
+  latent_dim: 8
   # EITHER run one kappa for speed:
   kappa: 1.0
   # OR sweep (comment 'kappa' above and uncomment this):
@@ -23,7 +23,7 @@ model:
 
 dr:
   method: "dca1"
-  n_components: 8    
+  n_components: 8
   random_state: 0
 
 training:
@@ -35,7 +35,7 @@ training:
   overwrite: true
   verbose: true
   test_split: 0.2
-  ms_per_sample: 1000   # your CSV bin is 10 ms → this is correct
+  ms_per_sample: 1000   
   rate_mode: "mean"
 
 initialization:
@@ -45,4 +45,5 @@ initialization:
 
 evaluation:
   prediction_horizons: [10, 20, 30, 40]
+
 
