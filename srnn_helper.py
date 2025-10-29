@@ -59,21 +59,22 @@ def get_device() -> str:
 # Paths
 # =========================
 def h5_path_for_rat(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
+    """
+    Expected HDF5 location. We may never open it (CSV-only), but keep this correct.
+    """
     root = Path(data_root)
-    return root / "Sub-Data" / "Only-Responsive" / f"Rat{rid}" / f"area_splits_rat{rid}_responsive" / "responsive_rates_raw_binned_1000ms.csv"
-
+    return root / "Rat-Data-hdf5" / f"Rat{rid}" / "NpxFiringRate_Behavior_SBL_10msBINS_0smoothing.hdf5"
 
 
 def csv_path_responsive_all(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
+    """
+    Prefer the 1 Hz-binned CSV if present; otherwise fall back to 10 ms CSV.
+    """
     root = Path(data_root)
-    return (
-        root
-        / "Sub-Data"
-        / "Only-Responsive"
-        / f"Rat{rid}"
-        / f"area_splits_rat{rid}_responsive"
-        / "responsive_rates_raw.csv"
-    )
+    dirp = root / "Sub-Data" / "Only-Responsive" / f"Rat{rid}" / f"area_splits_rat{rid}_responsive"
+    csv_1s = dirp / "responsive_rates_raw_binned_1000ms.csv"
+    csv_10ms = dirp / "responsive_rates_raw.csv"
+    return csv_1s if csv_1s.exists() else csv_10ms
 
 
 def base_model_dir(rid: int, outputs_root: Path = DEFAULT_OUTPUTS_ROOT) -> Path:
