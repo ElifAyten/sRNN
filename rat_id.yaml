@@ -1,41 +1,27 @@
-experiment:
-  name: "rat16_dca1_h8_k3"
-  description: "Train SRNN on Rat16 with DCA(8) and K=3."
-  seed: 0
-
-data:
-  rat_id: 16
-  data_root: "/content/drive/MyDrive/rSLDS"
-  outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
-  subset: "responsive"
-  # h5_optional: true   # (optional; default is true)
-
 model:
   K_states: 3
-  latent_dim: 8
-  kappa_values: [0.0, 0.5, 1.0, 2.0]
+  latent_dim: 8        
 
 dr:
   method: "dca1"
-  n_components: 8
+  n_components: 8      
   random_state: 0
 
 training:
-  num_iters: 4000
-  window_size: 100
-  batch_size: 128
+  num_iters: 1200        
+  window_size: 50        
+  stride: 10             
+  batch_size: 256        
   lr: 1e-4
   overwrite: true
   verbose: true
   test_split: 0.2
-  ms_per_sample: 10        # <— IMPORTANT for CSV-only
-  rate_mode: "mean"        # "mean" or "sum" for downsample
+  ms_per_sample: 1000
+  rate_mode: "mean"
 
-initialization:
-  warmup_epochs: 200
-  lambda_entropy: 1.0e-3
-  lambda_usage: 1.0e-2
-
-evaluation:
-  prediction_horizons: [10, 20, 30, 40]
-
+# IMPORTANT: run only one kappa at a time for speed
+model:
+  K_states: 3
+  latent_dim: 8
+  kappa: 1.0           
+  # kappa_values: [0.0, 0.5, 1.0, 2.0]   # ← comment out during fast runs
