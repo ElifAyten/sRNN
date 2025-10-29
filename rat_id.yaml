@@ -8,7 +8,7 @@ data:
   data_root: "/content/drive/MyDrive/rSLDS"
   outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
   subset: "responsive"
-  h5_optional: true
+  h5_optional: false
 
 model:
   K_states: 3
