@@ -1,27 +1,48 @@
+experiment:
+  name: "ratXX_dca1_h6_k3_fast"
+  description: "Fast SRNN run with DCA(d=6), K=3."
+  seed: 0
+
+data:
+  # EITHER pick a single rat_id:
+  rat_id: 15
+  # OR use a list instead (uncomment below) — CLI can override:
+  # rats: [12, 13, 14, 15, 16]
+  data_root: "/content/drive/MyDrive/rSLDS"
+  outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
+  subset: "responsive"
+  h5_optional: true
+
 model:
   K_states: 3
-  latent_dim: 8        
+  latent_dim: 8      
+  # EITHER run one kappa for speed:
+  kappa: 1.0
+  # OR sweep (comment 'kappa' above and uncomment this):
+  # kappa_values: [0.0, 0.5, 1.0, 2.0]
 
 dr:
   method: "dca1"
-  n_components: 8      
+  n_components: 8    
   random_state: 0
 
 training:
-  num_iters: 1200        
-  window_size: 50        
-  stride: 10             
-  batch_size: 256        
+  num_iters: 1200
+  window_size: 50
+  stride: 10
+  batch_size: 256     # drop to 128 if OOM
   lr: 1e-4
   overwrite: true
   verbose: true
   test_split: 0.2
-  ms_per_sample: 1000
+  ms_per_sample: 1000   # your CSV bin is 10 ms → this is correct
   rate_mode: "mean"
 
-# IMPORTANT: run only one kappa at a time for speed
-model:
-  K_states: 3
-  latent_dim: 8
-  kappa: 1.0           
-  # kappa_values: [0.0, 0.5, 1.0, 2.0]   # ← comment out during fast runs
+initialization:
+  warmup_epochs: 200
+  lambda_entropy: 1.0e-3
+  lambda_usage: 1.0e-2
+
+evaluation:
+  prediction_horizons: [10, 20, 30, 40]
+
