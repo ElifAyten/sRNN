@@ -1,0 +1,43 @@
+experiment:
+  name: "lorenz_pca3_k3"
+  description: "SRNN on Lorenz CSV via pseudo Rat99."
+  seed: 0
+
+data:
+  rat_id: 99
+  data_root: "/content/drive/MyDrive/rSLDS"
+  outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
+  subset: "responsive"
+  h5_optional: true   # we won't use H5; no footshocks
+
+model:
+  K_states: 3          # try 2–4; 3 is a good start
+  latent_dim: 3        # continuous latent size
+  kappa: 0.1           # mild self-transition bias
+
+dr:
+  method: "pca"        # no “none” option; PCA with d=3 is fine
+  n_components: 3
+  random_state: 0
+
+training:
+  num_iters: 1500
+  window_size: 200
+  stride: 20
+  batch_size: 128
+  lr: 1e-3
+  overwrite: true
+  verbose: true
+  test_split: 0.2
+  # pick ONE of these depending on your CSV:
+  ms_per_sample: 1000    # if file is already 1 Hz (binned)
+  # ms_per_sample: 10     # if file is at 100 Hz native
+  rate_mode: "mean"
+
+initialization:
+  warmup_epochs: 200
+  lambda_entropy: 1.0e-3
+  lambda_usage: 1.0e-2
+
+evaluation:
+  prediction_horizons: [10, 20, 40]
