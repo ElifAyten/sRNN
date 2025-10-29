@@ -1,13 +1,10 @@
 experiment:
-  name: "ratXX_dca1_h6_k3_fast"
-  description: "Fast SRNN run with DCA(d=6), K=3."
+  name: "rat15_dca1_h8_k3_fast"
+  description: "Fast SRNN run with DCA(d=8), K=3."
   seed: 0
 
 data:
-  # EITHER pick a single rat_id:
   rat_id: 15
-  # OR use a list instead (uncomment the next line) — CLI can override:
-  # rats: [12, 13, 14, 15, 16]
   data_root: "/content/drive/MyDrive/rSLDS"
   outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
   subset: "responsive"
@@ -16,10 +13,7 @@ data:
 model:
   K_states: 3
   latent_dim: 8
-  # EITHER run one kappa for speed:
   kappa: 1.0
-  # OR sweep (comment 'kappa' above and uncomment this):
-  # kappa_values: [0.0, 0.5, 1.0, 2.0]
 
 dr:
   method: "dca1"
@@ -27,19 +21,19 @@ dr:
   random_state: 0
 
 training:
-  num_iters: 1200
-  window_size: 124
-  stride: 18
-  batch_size: 256     # drop to 128 if OOM
+  num_iters: 1200         # for faster: 600
+  window_size: 124        # if 'no batches': use 60
+  stride: 18              # if 'no batches': use 10
+  batch_size: 256         # if OOM: 128
   lr: 1e-4
   overwrite: true
   verbose: true
   test_split: 0.2
-  ms_per_sample: 1000   
+  ms_per_sample: 1000     # 1000 if using 1 Hz CSV; 10 if using 10 ms CSV
   rate_mode: "mean"
 
 initialization:
-  warmup_epochs: 200
+  warmup_epochs: 200       # for faster: 100
   lambda_entropy: 1.0e-3
   lambda_usage: 1.0e-2
 
