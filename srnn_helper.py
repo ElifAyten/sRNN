@@ -3,16 +3,18 @@
 # Minimal, tidy SRNN training utilities with:
 # - time-aware train/test split on a single long session
 # - warm-up init phase (entropy + usage regularizers)
+# - optional warm-start from rSLDS (pi0 + transitions)
 # - kappa sweep support
 # - prediction evaluation via post-hoc linear decoder h->Z
 # - DCA-lite or PCA front-end, robust NaN handling
+# - CLI that reads YAML, supports multiple rat IDs, and rSLDS path templates
 # ------------------------------------------------------------
 
 from __future__ import annotations
 import os, json, math, warnings
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 from pathlib import Path
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, Tuple, Optional, List, Sequence
 
 import numpy as np
 import pandas as pd
@@ -59,9 +61,7 @@ def get_device() -> str:
 # Paths
 # =========================
 def h5_path_for_rat(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
-    """
-    Expected HDF5 location. We may never open it (CSV-only), but keep this correct.
-    """
+    """Expected HDF5 location."""
     root = Path(data_root)
     return root / "Rat-Data-hdf5" / f"Rat{rid}" / "NpxFiringRate_Behavior_SBL_10msBINS_0smoothing.hdf5"
 
@@ -382,7 +382,7 @@ def apply_srnn_patches():
 
 
 # =========================
-# Training / evaluation
+# Config & rSLDS warm-start
 # =========================
 @dataclass
 class TrainConfig:
@@ -390,8 +390,8 @@ class TrainConfig:
     rat_id: int
     data_root: Path = DEFAULT_DATA_ROOT
     outputs_root: Path = DEFAULT_OUTPUTS_ROOT
-    subset_name: str = "responsive"  # for naming only
-    h5_optional: bool = True  # allow CSV-only runs by default
+    subset_name: str = "responsive"
+    h5_optional: bool = True
 
     # DR
     dr_method: str = "dca1"
@@ -411,18 +411,23 @@ class TrainConfig:
     batch_size: int = 128
     lr: float = 1e-4
     seed: int = 0
-    test_split: float = 0.2  # last 20% of time goes to test
+    test_split: float = 0.2
     overwrite: bool = False
     verbose: bool = True
 
     # regularization
-    lambda_entropy: float = 1.0e-3  # encourage transition entropy
-    lambda_usage: float = 1.0e-2  # encourage state usage in warm-up
+    lambda_entropy: float = 1.0e-3
+    lambda_usage: float = 1.0e-2
 
-    # misc
+    # resampling / behavior
     ms_per_sample: Optional[int] = None
     rate_mode: str = "mean"
-    shock_expand_sec: float = 0.0     # <-- NEW: widen shock pulses by ±this many seconds
+    shock_expand_sec: float = 0.0
+
+    # --- warm-start from rSLDS discrete states ---
+    rslds_init_path: Optional[str] = None        # .npy path or template with {rat_id}
+    rslds_init_use_head: Optional[int] = 200     # first N samples to estimate pi0 (None = all)
+    prediction_horizons: Tuple[int, ...] = (10, 20, 30, 40)
 
 
 def _init_weights(module):
@@ -432,6 +437,59 @@ def _init_weights(module):
             nn.init.constant_(module.bias, 0.0)
 
 
+def _resolve_rslds_path(rslds_path_or_template: Optional[str], rat_id: int) -> Optional[str]:
+    if not rslds_path_or_template:
+        return None
+    s = str(rslds_path_or_template)
+    if "{rat_id}" in s:
+        s = s.format(rat_id=rat_id)
+    return s
+
+
+def _load_rslds_z(path: str, T_target: int, K: int) -> Optional[np.ndarray]:
+    if path is None or (isinstance(path, str) and path.strip() == ""):
+        return None
+    try:
+        z = np.load(path)
+    except Exception as e:
+        warnings.warn(f"[rSLDS init] Could not load {path}: {e}")
+        return None
+    z = np.asarray(z).ravel()
+    if z.size == 0:
+        return None
+    # make sure labels are in [0, K-1]
+    z = np.clip(z.astype(int), 0, K - 1)
+    # Align length with training series length (Zz length == T_target after DR)
+    if z.size >= T_target:
+        z = z[:T_target]
+    else:
+        z = np.pad(z, (0, T_target - z.size), mode="edge")
+    return z
+
+
+def _estimate_pi0_and_A(z: np.ndarray, K: int, use_head: Optional[int] = 200):
+    """Return initial log prior over states and log transition matrix from labels."""
+    if use_head is not None:
+        z_head = z[:max(1, int(use_head))]
+    else:
+        z_head = z
+    # pi0
+    counts = np.bincount(z_head, minlength=K).astype(float) + 1e-3
+    pi = counts / counts.sum()
+    log_pi = np.log(pi)
+
+    # transitions
+    A_counts = np.ones((K, K), float) * 1e-3  # Laplace smoothing
+    for a, b in zip(z[:-1], z[1:]):
+        A_counts[a, b] += 1.0
+    A = A_counts / A_counts.sum(axis=1, keepdims=True)
+    logA = np.log(A)
+    return log_pi.astype(np.float32), logA.astype(np.float32)
+
+
+# =========================
+# Training / evaluation
+# =========================
 def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     device = get_device()
     torch.manual_seed(cfg.seed)
@@ -464,7 +522,6 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     if "time_s" in df.columns:
         t = df.pop("time_s").values
     else:
-        # if H5 exists we’ll use its time, otherwise synthesize from ms_per_sample
         t = None
 
     FR_TN = df.values.astype(float)
@@ -473,8 +530,12 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     shock_times = None
     if have_h5:
         with h5py.File(h5p, "r") as h5:
-            if t is None and "time" in h5:
-                t = h5["time"][...]
+            if t is None:
+                # try a few common keys
+                if "time" in h5:
+                    t = h5["time"][...]
+                elif "/Behavior/time" in h5:
+                    t = h5["/Behavior/time"][...]
             if "footshock_times" in h5:
                 shock_times = h5["footshock_times"][...]
         if cfg.verbose:
@@ -484,7 +545,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         if cfg.verbose:
             print("[footshock] no H5 available → will default to zeros")
 
-    # if still no time vector, synthesize from ms_per_sample (require YAML to set it)
+    # if still no time vector, synthesize from ms_per_sample
     if t is None:
         if cfg.ms_per_sample is None:
             raise ValueError("CSV-only mode needs training.ms_per_sample set in YAML")
@@ -550,7 +611,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         ds,
         batch_size=train_bs,
         shuffle=False,
-        drop_last=False,  # allow last partial batch
+        drop_last=False,
         sampler=subset_sampler(train_idx),
         pin_memory=(device == "cuda"),
         num_workers=max(0, (os.cpu_count() or 2) // 2),
@@ -559,7 +620,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         ds,
         batch_size=test_bs,
         shuffle=False,
-        drop_last=False,  # allow last partial batch
+        drop_last=False,
         sampler=subset_sampler(test_idx),
         pin_memory=(device == "cuda"),
         num_workers=max(0, (os.cpu_count() or 2) // 2),
@@ -572,6 +633,40 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     gen.kappa = float(cfg.kappa)
     infer.apply(_init_weights)
     gen.apply(_init_weights)
+
+    # ----- OPTIONAL: warm-start from rSLDS z_hat -----
+    rslds_path = _resolve_rslds_path(cfg.rslds_init_path, cfg.rat_id)
+    if rslds_path:
+        z_init = _load_rslds_z(rslds_path, T_target=Zz.shape[0], K=cfg.K_states)
+        if z_init is not None:
+            log_pi, logA = _estimate_pi0_and_A(z_init, cfg.K_states, cfg.rslds_init_use_head)
+
+            # Ensure transition/initialization params exist before we set them
+            if not hasattr(gen, "pi0"):
+                gen.pi0 = nn.Parameter(torch.zeros(cfg.K_states, device=device))
+            if not hasattr(gen, "trans_h"):
+                gen.trans_h = nn.Linear(cfg.latent_dim, cfg.K_states * cfg.K_states, bias=True).to(device)
+            if not hasattr(gen, "trans_u"):
+                gen.trans_u = nn.Linear(1, cfg.K_states * cfg.K_states, bias=False).to(device)
+
+            with torch.no_grad():
+                # Put *log* prior into parameter; gen.forward uses log_softmax(pi0)
+                gen.pi0.data = torch.from_numpy(log_pi).to(device)
+
+                # Make weights ~0 so bias dominates early training
+                nn.init.constant_(gen.trans_h.weight, 0.0)
+                nn.init.constant_(gen.trans_h.bias, 0.0)
+                if gen.trans_u.weight is not None:
+                    nn.init.constant_(gen.trans_u.weight, 0.0)
+
+                # Bias transitions toward rSLDS transitions (logA)
+                gen.trans_h.bias.copy_(torch.from_numpy(logA.reshape(-1)).to(device))
+
+            if cfg.verbose:
+                print(f"[rSLDS init] Warm-started from {rslds_path}")
+        else:
+            if cfg.verbose:
+                print(f"[rSLDS init] Skipping warm-start (failed to load or empty): {rslds_path}")
 
     params = list(infer.parameters()) + list(gen.parameters())
     opt = torch.optim.Adam(params, lr=cfg.lr)
@@ -594,7 +689,6 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         if warmup:
             # encourage roughly uniform marginal usage over states
             with torch.no_grad():
-                # posterior approx for z_t: softmax over outgoing transitions
                 post = torch.softmax(p_s, dim=-1)                       # (B,T,K,K)
                 marg = post.mean(dim=(0, 1))                            # (K,K)
                 usage = marg.sum(dim=1) / marg.sum()                    # (K,)
@@ -707,7 +801,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         b = np.zeros((1, d_in), np.float32)
 
     # ----- K-step prediction MSE on test windows -----
-    def k_step_pred_mse(loader, horizons=(10, 20, 30, 40)):
+    def k_step_pred_mse(loader, horizons: Sequence[int]):
         mses = {int(k): [] for k in horizons}
         with torch.no_grad():
             for xb, ub in loader:
@@ -757,7 +851,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
                         mses[int(Kpred)].append(mse)
         return {k: (float(np.mean(v)) if len(v) else np.nan) for k, v in mses.items()}
 
-    pred_mse_test = k_step_pred_mse(test_loader, horizons=(10, 20, 30, 40))
+    pred_mse_test = k_step_pred_mse(test_loader, cfg.prediction_horizons)
 
     # ----- save artifacts -----
     np.save(save_dir / "elbos.npy", np.array(elbos, dtype=np.float32))
@@ -783,7 +877,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         json.dump(_cfg_to_jsonable(cfg), f, indent=2)
 
     with open(save_dir / "prediction_mse.json", "w") as f:
-        json.dump(pred_mse_test, f, indent=2)
+        json.dump({str(k): v for k, v in pred_mse_test.items()}, f, indent=2)
 
     # quick ELBO plot (sign so larger=better)
     plt.figure()
@@ -824,54 +918,8 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
 
 
 # =========================
-# Simple wrapper utilities
+# Batch helpers (optional)
 # =========================
-def run_fit_srnn(h5_path: Path,
-                 csv_path: Path,
-                 save_dir: Path,
-                 K_states: int,
-                 seed: int,
-                 kappa: float,
-                 *,
-                 dr_method="dca1",
-                 dr_n_components=8,
-                 dr_random_state=None,
-                 latent_dim=8,
-                 num_iters=2000,
-                 warmup_epochs=200,
-                 window_size=100,
-                 batch_size=128,
-                 lr=1e-4,
-                 overwrite=False,
-                 verbose=True,
-                 device: str | None = None):
-    """
-    Backwards-compatible thin wrapper (kept so your existing scripts don't break).
-    Uses time split=0.2 by default and stride=1.
-    """
-    cfg = TrainConfig(
-        rat_id=-1,  # not used by this thin wrapper
-        data_root=h5_path.parent.parent,  # best guess
-        outputs_root=save_dir.parent.parent if save_dir else DEFAULT_OUTPUTS_ROOT,
-        subset_name="custom",
-        dr_method=dr_method,
-        dr_n=dr_n_components,
-        dr_random_state=dr_random_state if dr_random_state is not None else seed,
-        K_states=K_states,
-        latent_dim=latent_dim,
-        kappa=kappa,
-        num_iters=num_iters,
-        warmup_epochs=warmup_epochs,
-        window_size=window_size,
-        batch_size=batch_size,
-        lr=lr,
-        seed=seed,
-        overwrite=overwrite,
-        verbose=verbose
-    )
-    return {"status": "use_fit_srnn_with_split", "msg": "Prefer TrainConfig + fit_srnn_with_split() in new code."}
-
-
 def run_kappa_sweep(*,
                     rat: int,
                     data_root: str | Path,
@@ -889,7 +937,13 @@ def run_kappa_sweep(*,
                     lr=1e-4,
                     overwrite=True,
                     verbose=True,
-                    subset="responsive"):
+                    subset="responsive",
+                    rslds_init_path: Optional[str] = None,
+                    rslds_init_use_head: Optional[int] = 200,
+                    ms_per_sample: Optional[int] = None,
+                    rate_mode: str = "mean",
+                    shock_expand_sec: float = 0.0,
+                    prediction_horizons=(10,20,30,40)):
     results = []
     for kappa in kappa_grid:
         cfg = TrainConfig(
@@ -911,6 +965,12 @@ def run_kappa_sweep(*,
             seed=seed,
             overwrite=overwrite,
             verbose=verbose,
+            rslds_init_path=rslds_init_path,
+            rslds_init_use_head=rslds_init_use_head,
+            ms_per_sample=ms_per_sample,
+            rate_mode=rate_mode,
+            shock_expand_sec=shock_expand_sec,
+            prediction_horizons=tuple(prediction_horizons),
         )
         res = fit_srnn_with_split(cfg)
         results.append({"kappa": kappa, **res})
@@ -918,29 +978,46 @@ def run_kappa_sweep(*,
 
 
 # =========================
-# CLI (optional)
+# CLI (YAML)
 # =========================
 if __name__ == "__main__":
     import argparse, yaml
+
     p = argparse.ArgumentParser()
-    p.add_argument("--config", type=str, required=False, help="YAML config path")
+    p.add_argument("--config", type=str, required=True, help="YAML config path")
     args = p.parse_args()
 
-    if args.config:
-        with open(args.config, "r") as f:
-            conf = yaml.safe_load(f)
-        # map YAML to TrainConfig fields (with safe defaults)
-        exp = conf.get("experiment", {})
-        data = conf.get("data", {})
-        dr = conf.get("dr", {})
-        model = conf.get("model", {})
-        train = conf.get("training", {})
-        reg = conf.get("initialization", {})
+    with open(args.config, "r") as f:
+        conf = yaml.safe_load(f)
 
+    # map YAML to TrainConfig fields (with safe defaults)
+    exp = conf.get("experiment", {})
+    data = conf.get("data", {})
+    dr = conf.get("dr", {})
+    model = conf.get("model", {})
+    train = conf.get("training", {})
+    reg = conf.get("initialization", {})
+    eval_blk = conf.get("evaluation", {})
+    rslds_blk = conf.get("rslds_init", {})  # optional block
+
+    rats = data.get("rat_id", 0)
+    # allow list of rats
+    if isinstance(rats, (list, tuple)):
+        rat_ids: List[int] = [int(r) for r in rats]
+    else:
+        rat_ids = [int(rats)]
+
+    horizons = eval_blk.get("prediction_horizons", [10, 20, 30, 40])
+
+    # rSLDS path can be fixed path or a template with {rat_id}
+    rslds_path = rslds_blk.get("path", conf.get("rslds_init_path", None))
+    rslds_use_head = rslds_blk.get("use_head", reg.get("rslds_init_use_head", 200))
+
+    for rid in rat_ids:
         cfg = TrainConfig(
-            rat_id=int(data.get("rat_id", 0)),
-            data_root=Path(data.get("data_root", DEFAULT_DATA_ROOT)),
-            outputs_root=Path(data.get("outputs_root", DEFAULT_OUTPUTS_ROOT)),
+            rat_id=rid,
+            data_root=Path(data.get("data_root", str(DEFAULT_DATA_ROOT))),
+            outputs_root=Path(data.get("outputs_root", str(DEFAULT_OUTPUTS_ROOT))),
             subset_name=str(data.get("subset", "responsive")),
             h5_optional=bool(data.get("h5_optional", True)),
             dr_method=str(dr.get("method", "dca1")),
@@ -948,7 +1025,7 @@ if __name__ == "__main__":
             dr_random_state=dr.get("random_state", exp.get("seed", 0)),
             K_states=int(model.get("K_states", 5)),
             latent_dim=int(model.get("latent_dim", 8)),
-            kappa=float(model.get("kappa_values", [0.0])[0]) if "kappa_values" in model else float(model.get("kappa", 0.0)),
+            kappa=float(model.get("kappa_values", [model.get("kappa", 0.0)])[0]) if "kappa_values" in model else float(model.get("kappa", 0.0)),
             num_iters=int(train.get("num_iters", 2000)),
             warmup_epochs=int(reg.get("warmup_epochs", 200)),
             window_size=int(train.get("window_size", 100)),
@@ -964,9 +1041,10 @@ if __name__ == "__main__":
             ms_per_sample=train.get("ms_per_sample", None),
             rate_mode=str(train.get("rate_mode", "mean")),
             shock_expand_sec=float(train.get("shock_expand_sec", 0.0)),
+            rslds_init_path=_resolve_rslds_path(rslds_path, rid),
+            rslds_init_use_head=rslds_use_head,
+            prediction_horizons=tuple(int(h) for h in horizons),
         )
         out = fit_srnn_with_split(cfg)
-        print(json.dumps(out, indent=2))
-    else:
-        print("Pass --config configs/your_experiment.yaml")
+        print(json.dumps({"rat_id": rid, **out}, indent=2))
 
