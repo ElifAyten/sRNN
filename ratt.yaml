@@ -1,0 +1,49 @@
+experiment:
+  name: "rats_15_16_17_19_20_21_dca1_h8_k3"
+  seed: 0
+
+data:
+  rat_id: [15, 16, 17, 19, 20, 21]
+  data_root: "/content/drive/MyDrive/rSLDS"
+  outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
+  subset: "responsive"
+  h5_optional: false
+
+model:
+  K_states: 3
+  latent_dim: 8
+  kappa: 1.0
+
+dr:
+  method: "dca1"
+  n_components: 8
+  random_state: 0
+
+training:
+  num_iters: 1200
+  window_size: 124
+  stride: 18
+  batch_size: 256
+  lr: 1e-4
+  overwrite: true
+  verbose: true
+  test_split: 0.2
+  ms_per_sample: 1000      # 1000 if using 1 Hz CSV; 10 if using 10 ms CSV
+  rate_mode: "mean"
+
+initialization:
+  warmup_epochs: 200
+  lambda_entropy: 1.0e-3
+  lambda_usage: 1.0e-2
+
+# Optional: rSLDS warm-start
+# Either give a fixed path, or a template with {rat_id}
+rslds_init:
+  # Example fixed file (only for one rat):
+  # path: "/content/drive/MyDrive/sRNN/Rat21/initialization for srnn/drop_nan_15000i_z_hat_A.npy"
+  # Better: per-rat template:
+  path: "/content/drive/MyDrive/sRNN/Rat{rat_id}/initialization for srnn/drop_nan_15000i_z_hat_A.npy"
+  use_head: 200
+
+evaluation:
+  prediction_horizons: [10, 20, 30, 40]
