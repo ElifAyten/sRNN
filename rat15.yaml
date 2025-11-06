@@ -1,0 +1,48 @@
+# configs/rat15_srnn.yaml
+experiment:
+  name: "rat15_dca1_h8_k3_fast"
+  description: "SRNN with DCA(d=8), K=3, warm-start from rSLDS z."
+  seed: 0
+
+data:
+  rat_id: 15
+  data_root: "/content/drive/MyDrive/rSLDS"
+  outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
+  subset: "responsive"
+  h5_optional: false
+
+model:
+  K_states: 3
+  latent_dim: 8
+  kappa: 1.0
+
+dr:
+  method: "dca1"
+  n_components: 8
+  random_state: 0
+
+training:
+  num_iters: 1200
+  window_size: 124
+  stride: 18
+  batch_size: 256
+  lr: 1e-4
+  overwrite: true
+  verbose: true
+  test_split: 0.2
+  ms_per_sample: 1000
+  rate_mode: "mean"
+  shock_expand_sec: 0.0
+
+initialization:
+  warmup_epochs: 200
+  lambda_entropy: 1.0e-3
+  lambda_usage: 1.0e-2
+
+evaluation:
+  prediction_horizons: [10, 20, 30, 40]
+
+# --- NEW: pass your rSLDS labels here ---
+rslds_init:
+  z_hat_path: "/content/drive/MyDrive/sRNN/Rat15/initialization_for_srnn/drop_nan_15000i_z_hat_A.npy"
+  use_head: 200     # how many early samples to estimate pi0 (None = full series)
