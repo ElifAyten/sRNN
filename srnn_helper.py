@@ -5,6 +5,7 @@
 # - warm-up init phase (entropy + usage regularizers)
 # - optional warm-start from rSLDS (pi0 + transitions)
 # - kappa sweep support
+# - TBPTT support (truncate backprop through time over window chunks)
 # - prediction evaluation via post-hoc linear decoder h->Z
 # - DCA-lite or PCA front-end, robust NaN handling
 # - CLI that reads YAML, supports multiple rat IDs, and rSLDS path templates
@@ -12,7 +13,7 @@
 
 from __future__ import annotations
 import os, json, math, warnings
-from dataclasses import dataclass, asdict, replace
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, Tuple, Optional, List, Sequence
 
@@ -273,15 +274,15 @@ def subset_sampler(indices: List[int]) -> torch.utils.data.Sampler:
 
 
 # =========================
-# Patch SRNN package
+# Patch SRNN package (add TBPTT support via h0 carry)
 # =========================
 def apply_srnn_patches():
     """
     Patches the upstream sRNN implementation:
     - robust inference forward (no NaNs, fixed init)
+    - accepts optional h0 and returns final hidden (for TBPTT)
     - generative forward returning log-probs for transitions/dynamics
     """
-    # try both package styles
     try:
         from sRNN.networks import InferenceNetwork as _Inf, GenerativeSRNN as _Gen
     except Exception:
@@ -290,7 +291,8 @@ def apply_srnn_patches():
     def _infer_num_dirs(rnn: nn.RNNBase) -> int:
         return 2 if getattr(rnn, "bidirectional", False) else 1
 
-    def _inf_forward_stable(self, x):  # x: (B, T, D)
+    # NOTE: signature supports optional h0 and returns (h, q, h_last)
+    def _inf_forward_stable(self, x, h0: Optional[torch.Tensor] = None):  # x: (B, T, D)
         x = torch.nan_to_num(x, 0.0, 0.0, 0.0).contiguous()
         try:
             self.rnn.flatten_parameters()
@@ -303,15 +305,20 @@ def apply_srnn_patches():
         if hidden_size is None:
             hs, _ = self.rnn(x[:, :1, :])
             hidden_size = hs.size(-1)
-        h0 = torch.zeros(num_layers * num_dirs, B, hidden_size, device=x.device, dtype=x.dtype).contiguous()
-        h_seq, _ = self.rnn(x, h0)
+        if h0 is None:
+            h0 = torch.zeros(num_layers * num_dirs, B, hidden_size, device=x.device, dtype=x.dtype).contiguous()
+        else:
+            # safety: ensure correct shape
+            if h0.dim() != 3:
+                raise ValueError("h0 must have shape (num_layers*num_dirs, B, hidden_size)")
+        h_seq, h_last = self.rnn(x, h0)
         m = self.fc_mean(h_seq)
         lv = torch.clamp(torch.nan_to_num(self.fc_logvar(h_seq), 0.0, 10.0, -10.0), -8.0, 5.0)
         std = torch.exp(0.5 * lv) + 1e-6
         std = torch.nan_to_num(std, 1e-3, 1.0, 1e-3)
         q = torch.distributions.Independent(torch.distributions.Normal(m, std), 1)
         h = torch.nan_to_num(q.rsample(), 0.0, 0.0, 0.0).contiguous()
-        return h, q
+        return h, q, h_last  # <--- return final hidden for TBPTT carry
 
     def _gen_forward(self, x, u, h_samp):
         # Light-weight generator with per-state RNN on x to predict mean h
@@ -414,6 +421,7 @@ class TrainConfig:
     test_split: float = 0.2
     overwrite: bool = False
     verbose: bool = True
+    tbptt_steps: Optional[int] = None   # <--- NEW
 
     # regularization
     lambda_entropy: float = 1.0e-3
@@ -531,7 +539,6 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     if have_h5:
         with h5py.File(h5p, "r") as h5:
             if t is None:
-                # try a few common keys
                 if "time" in h5:
                     t = h5["time"][...]
                 elif "/Behavior/time" in h5:
@@ -640,28 +647,19 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         z_init = _load_rslds_z(rslds_path, T_target=Zz.shape[0], K=cfg.K_states)
         if z_init is not None:
             log_pi, logA = _estimate_pi0_and_A(z_init, cfg.K_states, cfg.rslds_init_use_head)
-
-            # Ensure transition/initialization params exist before we set them
             if not hasattr(gen, "pi0"):
                 gen.pi0 = nn.Parameter(torch.zeros(cfg.K_states, device=device))
             if not hasattr(gen, "trans_h"):
                 gen.trans_h = nn.Linear(cfg.latent_dim, cfg.K_states * cfg.K_states, bias=True).to(device)
             if not hasattr(gen, "trans_u"):
                 gen.trans_u = nn.Linear(1, cfg.K_states * cfg.K_states, bias=False).to(device)
-
             with torch.no_grad():
-                # Put *log* prior into parameter; gen.forward uses log_softmax(pi0)
                 gen.pi0.data = torch.from_numpy(log_pi).to(device)
-
-                # Make weights ~0 so bias dominates early training
                 nn.init.constant_(gen.trans_h.weight, 0.0)
                 nn.init.constant_(gen.trans_h.bias, 0.0)
                 if gen.trans_u.weight is not None:
                     nn.init.constant_(gen.trans_u.weight, 0.0)
-
-                # Bias transitions toward rSLDS transitions (logA)
                 gen.trans_h.bias.copy_(torch.from_numpy(logA.reshape(-1)).to(device))
-
             if cfg.verbose:
                 print(f"[rSLDS init] Warm-started from {rslds_path}")
         else:
@@ -672,11 +670,11 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     opt = torch.optim.Adam(params, lr=cfg.lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=cfg.num_iters, eta_min=cfg.lr * 0.1)
 
-    # ----- helpers -----
-    def _batch_step(x, u, epoch, warmup=True):
-        """Compute loss = -ELBO - entropy_bonus - usage_bonus (during warmup)."""
-        h_samp, q_dist = infer(x)
-        p0, p_s, p_h, *_ = gen(x, u, h_samp)
+    # ----- helpers (now TBPTT-aware) -----
+    def _batch_step_chunk(x_chunk, u_chunk, warmup=True, h0: Optional[torch.Tensor] = None):
+        """One truncated chunk: returns (loss, elbo, h_last_detached)."""
+        h_samp, q_dist, h_last = infer(x_chunk, h0=h0)
+        p0, p_s, p_h, *_ = gen(x_chunk, u_chunk, h_samp)
 
         log_q = q_dist.log_prob(h_samp).sum(dim=1)                      # (B,)
         elbo = (p0.sum(1) + p_s.sum((1, 2, 3)) + p_h.sum((1, 2)) - log_q).mean()
@@ -687,7 +685,6 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         loss = -elbo - cfg.lambda_entropy * entropy_z
 
         if warmup:
-            # encourage roughly uniform marginal usage over states
             with torch.no_grad():
                 post = torch.softmax(p_s, dim=-1)                       # (B,T,K,K)
                 marg = post.mean(dim=(0, 1))                            # (K,K)
@@ -696,34 +693,60 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
             usage_loss = F.kl_div(torch.log(usage + 1e-12), target, reduction="sum")
             loss = loss + cfg.lambda_usage * usage_loss
 
-        return loss, elbo.detach()
+        return loss, elbo.detach(), h_last.detach()
 
-    # ----- train -----
+    # ----- train (TBPTT if cfg.tbptt_steps is set) -----
     losses, elbos = [], []
+    tbptt = cfg.tbptt_steps if (cfg.tbptt_steps and cfg.tbptt_steps > 0) else None
+
     for epoch in range(1, cfg.num_iters + 1):
         infer.train(); gen.train()
-        # LR warmup for first 10 epochs
         base_lr = cfg.lr
         for g in opt.param_groups:
             g["lr"] = (base_lr * epoch / 10.0) if epoch <= 10 else g.get("lr", base_lr)
+
         total = 0.0; total_elbo = 0.0; nb = 0
         for xb, ub in train_loader:
-            x = xb.to(device, non_blocking=True)
-            u = ub.to(device, non_blocking=True)
-            opt.zero_grad()
+            x = xb.to(device, non_blocking=True)  # (B, W, D)
+            u = ub.to(device, non_blocking=True)  # (B, W, 1)
             warm = (epoch <= cfg.warmup_epochs)
-            loss, elbo = _batch_step(x, u, epoch, warmup=warm)
-            if torch.isnan(loss):
-                continue
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(params, 5.0)
-            opt.step()
-            total += float(loss.item())
-            total_elbo += float(elbo.item())
-            nb += 1
+
+            if (tbptt is None) or (tbptt >= x.size(1)):
+                # full-window update
+                opt.zero_grad()
+                loss, elbo, _ = _batch_step_chunk(x, u, warmup=warm, h0=None)
+                if torch.isnan(loss):
+                    continue
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(params, 5.0)
+                opt.step()
+                total += float(loss.item()); total_elbo += float(elbo.item()); nb += 1
+            else:
+                # truncated BPTT across chunks of length tbptt
+                B, Wtot, _ = x.shape
+                h_carry = None
+                # step optimizer per chunk (standard TBPTT practice)
+                for t0 in range(0, Wtot, tbptt):
+                    t1 = min(Wtot, t0 + tbptt)
+                    x_chunk = x[:, t0:t1, :]
+                    u_chunk = u[:, t0:t1, :]
+                    opt.zero_grad()
+                    loss, elbo, h_carry = _batch_step_chunk(x_chunk, u_chunk, warmup=warm, h0=h_carry)
+                    if torch.isnan(loss):
+                        # reset carry if numerical issue
+                        h_carry = None
+                        continue
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(params, 5.0)
+                    opt.step()
+                    # detach carry to truncate graph
+                    h_carry = h_carry.detach()
+                    total += float(loss.item()); total_elbo += float(elbo.item()); nb += 1
+
         if nb == 0:
             warnings.warn("No batches were processed. Check window/stride and dataset length.")
             break
+
         losses.append(total / nb)
         elbos.append(total_elbo / nb)
         scheduler.step()
@@ -731,7 +754,6 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         if cfg.verbose and (epoch % max(1, cfg.num_iters // 20) == 0 or epoch == 1):
             print(f"[{save_dir.name}] epoch {epoch}/{cfg.num_iters}  loss={losses[-1]:.4f}  elbo={elbos[-1]:.4f}")
 
-        # periodic checkpoints
         if epoch % max(1, cfg.num_iters // 6) == 0:
             torch.save(
                 {"epoch": epoch, "infer": infer.state_dict(), "gen": gen.state_dict(),
@@ -746,7 +768,8 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         for xb, ub in train_loader:
             x = xb.to(device, non_blocking=True)
             u = ub.to(device, non_blocking=True)
-            h_samp, _ = infer(x)
+            # full forward (no TBPTT needed for evaluation snapshot)
+            h_samp, _, _ = infer(x, h0=None)
             p0, p_s, p_h, *_ = gen(x, u, h_samp)
             z_hat = torch.argmax(torch.logsumexp(p_s, dim=-1), dim=-1)  # (B,T)
             all_h.append(h_samp.cpu().numpy())
@@ -784,7 +807,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         for xb, ub in train_loader:
             x = xb.to(device, non_blocking=True)
             u = ub.to(device, non_blocking=True)
-            h_samp, _ = infer(x)                  # (B,W,H)
+            h_samp, _, _ = infer(x, h0=None)       # (B,W,H)
             H_list.append(h_samp.cpu().numpy().reshape(-1, cfg.latent_dim))
             Z_list.append(x.cpu().numpy().reshape(-1, d_in))
     if H_list:
@@ -805,47 +828,40 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         mses = {int(k): [] for k in horizons}
         with torch.no_grad():
             for xb, ub in loader:
-                x = xb.to(device, non_blocking=True)  # (B,W,d_in) — Z-space input
+                x = xb.to(device, non_blocking=True)  # (B,W,d_in)
                 u = ub.to(device, non_blocking=True)
                 B, Ww, Din = x.shape
-                h_samp, _ = infer(x)                  # (B,W,H)
-                # deterministic rollout from last context point
+                h_samp, _, _ = infer(x, h0=None)      # (B,W,H)
                 for Kpred in horizons:
                     if Kpred >= Ww:
                         continue
-                    # start at t0 = Ww - Kpred - 1, use that as context
                     t0 = Ww - Kpred - 1
-                    h_t = h_samp[:, t0, :]            # (B,H)
-                    x_t = x[:, t0, :].contiguous()    # (B,d_in)
+                    h_t = h_samp[:, t0, :]
+                    x_t = x[:, t0, :].contiguous()
                     preds = []
                     for t in range(t0 + 1, t0 + 1 + Kpred):
-                        Ah = gen.trans_h(h_t)                 # (B, K*K)
+                        Ah = gen.trans_h(h_t)
                         Au = gen.trans_u(u[:, t, :])
                         A = (Ah + Au).view(B, gen.K, gen.K)
                         A = A - torch.logsumexp(A, dim=2, keepdim=True)
-                        # pick most likely next state per batch member (greedy)
-                        z_next = torch.argmax(A.mean(dim=1), dim=1)  # (B,)
-                        # run the chosen state's rnn one step
+                        z_next = torch.argmax(A.mean(dim=1), dim=1)
                         out_list = []
                         for k in range(gen.K):
                             mask = (z_next == k)
                             if mask.any():
-                                x_step = x_t[mask].unsqueeze(1)      # (b_k,1,d_in)
-                                h0 = h_t[mask].unsqueeze(0)          # (1,b_k,H)
+                                x_step = x_t[mask].unsqueeze(1)
+                                h0 = h_t[mask].unsqueeze(0)
                                 out_k, _ = gen.rnns[k](x_step, h0)
                                 out_list.append((mask, out_k[:, 0, :]))
-                        # stitch
                         h_next = torch.zeros_like(h_t)
                         for mask, val in out_list:
                             h_next[mask] = val
-                        # predict Z via linear decoder
                         z_pred = h_next @ torch.from_numpy(W).to(h_next) + torch.from_numpy(b).to(h_next)
                         preds.append(z_pred)
-                        # advance
                         h_t = h_next
                         x_t = z_pred
                     if preds:
-                        Zpred = torch.stack(preds, dim=1)               # (B,Kpred,d_in)
+                        Zpred = torch.stack(preds, dim=1)
                         Ztrue = x[:, t0 + 1 : t0 + 1 + Kpred, :]
                         mse = torch.mean((Zpred - Ztrue) ** 2, dim=(0, 1, 2)).item()
                         mses[int(Kpred)].append(mse)
@@ -865,7 +881,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     with open(save_dir / "dr_meta.json", "w") as f:
         json.dump(dr_meta, f, indent=2)
 
-    # ---- JSON-safe config dump (Path -> str) ----
+    # JSON-safe config dump (Path -> str)
     def _cfg_to_jsonable(cfg_obj):
         d = asdict(cfg_obj)
         for k, v in list(d.items()):
@@ -879,7 +895,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     with open(save_dir / "prediction_mse.json", "w") as f:
         json.dump({str(k): v for k, v in pred_mse_test.items()}, f, indent=2)
 
-    # quick ELBO plot (sign so larger=better)
+    # quick ELBO plot
     plt.figure()
     plt.plot(-np.array(losses), label="ELBO (approx)")
     plt.xlabel("epoch"); plt.ylabel("ELBO ↑")
@@ -943,7 +959,8 @@ def run_kappa_sweep(*,
                     ms_per_sample: Optional[int] = None,
                     rate_mode: str = "mean",
                     shock_expand_sec: float = 0.0,
-                    prediction_horizons=(10,20,30,40)):
+                    prediction_horizons=(10,20,30,40),
+                    tbptt_steps: Optional[int] = None):
     results = []
     for kappa in kappa_grid:
         cfg = TrainConfig(
@@ -971,6 +988,7 @@ def run_kappa_sweep(*,
             rate_mode=rate_mode,
             shock_expand_sec=shock_expand_sec,
             prediction_horizons=tuple(prediction_horizons),
+            tbptt_steps=tbptt_steps,
         )
         res = fit_srnn_with_split(cfg)
         results.append({"kappa": kappa, **res})
@@ -1001,15 +1019,10 @@ if __name__ == "__main__":
     rslds_blk = conf.get("rslds_init", {})  # optional block
 
     rats = data.get("rat_id", 0)
-    # allow list of rats
-    if isinstance(rats, (list, tuple)):
-        rat_ids: List[int] = [int(r) for r in rats]
-    else:
-        rat_ids = [int(rats)]
+    rat_ids: List[int] = [int(r) for r in (rats if isinstance(rats, (list, tuple)) else [rats])]
 
     horizons = eval_blk.get("prediction_horizons", [10, 20, 30, 40])
 
-    # rSLDS path can be fixed path or a template with {rat_id}
     rslds_path = rslds_blk.get("path", conf.get("rslds_init_path", None))
     rslds_use_head = rslds_blk.get("use_head", reg.get("rslds_init_use_head", 200))
 
@@ -1044,7 +1057,7 @@ if __name__ == "__main__":
             rslds_init_path=_resolve_rslds_path(rslds_path, rid),
             rslds_init_use_head=rslds_use_head,
             prediction_horizons=tuple(int(h) for h in horizons),
+            tbptt_steps=int(train.get("tbptt_steps")) if ("tbptt_steps" in train and train.get("tbptt_steps") is not None) else None,
         )
         out = fit_srnn_with_split(cfg)
         print(json.dumps({"rat_id": rid, **out}, indent=2))
-
