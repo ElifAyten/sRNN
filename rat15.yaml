@@ -1,7 +1,7 @@
 # configs/rat15_srnn.yaml
 experiment:
-  name: "rat15_sticky_dca6_k3_sweep"
-  description: "SRNN: DCA(d=8), K=3, stickier transitions, wider shock regressor, optional rSLDS warm-start."
+  name: "rat15_tbptt_w40_s10_k3"
+  description: "SRNN: DCA(d=8), K=3, TBPTT(24), window 40/stride 10."
   seed: 0
 
 data:
@@ -14,18 +14,18 @@ data:
 model:
   K_states: 3
   latent_dim: 8
-  # try a small sweep for stickiness; the CLI will run one config per value
-  kappa_values: [1.0, 3.0, 6.0]
+  kappa: 3.0              # <-- single value (recommended to start)
 
 dr:
   method: "dca1"
-  n_components: 8            # slightly lower than 8 for stability
+  n_components: 8
   random_state: 0
 
 training:
-  num_iters: 1200
-  window_size: 180           # more temporal context -> fewer flips
-  stride: 18                 # keep similar overlap
+  num_iters: 2000
+  window_size: 40         # <-- your request
+  stride: 10              # <-- your request
+  tbptt_steps: 24         # <-- NEW: enables truncated BPTT
   batch_size: 256
   lr: 1e-4
   overwrite: true
@@ -33,17 +33,17 @@ training:
   test_split: 0.2
   ms_per_sample: 1000
   rate_mode: "mean"
-  shock_expand_sec: 2.0      # widen shock influence to ±2s (still unsupervised)
+  shock_expand_sec: 2.0
 
 initialization:
-  warmup_epochs: 400         # longer warm-up to stabilize usage/entropy
-  lambda_entropy: 1.0e-4     # less pressure toward high-entropy transitions
-  lambda_usage: 2.0e-2       # keep states alive
+  warmup_epochs: 400
+  lambda_entropy: 1.0e-4
+  lambda_usage: 2.0e-2
 
 evaluation:
   prediction_horizons: [10, 20, 30, 40]
 
-# optional rSLDS warm-start for pi0 and transitions
 rslds_init:
-  path: "/content/drive/My Drive/sRNN/Rat15/initialization for srnn/drop_nan_15000i_z_hat_A.npy"  # <-- key is 'path' (not z_hat_path)
+  path: "/content/drive/My Drive/sRNN/Rat15/initialization for srnn/drop_nan_15000i_z_hat_A.npy"
   use_head: 200
+
