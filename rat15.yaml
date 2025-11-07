@@ -45,5 +45,5 @@ evaluation:
 
 # optional rSLDS warm-start for pi0 and transitions
 rslds_init:
-  path: "/content/drive/MyDrive/sRNN/Rat15/initialization_for_srnn/drop_nan_15000i_z_hat_A.npy"  # <-- key is 'path' (not z_hat_path)
+  path: "/content/drive/My Drive/sRNN/Rat15/initialization for srnn/drop_nan_15000i_z_hat_A.npy"  # <-- key is 'path' (not z_hat_path)
   use_head: 200
