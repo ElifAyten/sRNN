@@ -44,5 +44,5 @@ evaluation:
 
 # --- NEW: pass your rSLDS labels here ---
 rslds_init:
-  z_hat_path: "/content/drive/MyDrive/sRNN/Rat15/initialization_for_srnn/drop_nan_15000i_z_hat_A.npy"
+  z_hat_path: "/content/drive/MyDrive/sRNN/Rat16/initialization_for_srnn/drop_nan_15000i_z_hat_A.npy"
   use_head: 200     # how many early samples to estimate pi0 (None = full series)
