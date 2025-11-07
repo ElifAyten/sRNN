@@ -1,7 +1,7 @@
 # configs/rat15_srnn.yaml
 experiment:
-  name: "rat15_dca1_h8_k3_fast"
-  description: "SRNN with DCA(d=8), K=3, warm-start from rSLDS z."
+  name: "rat15_sticky_dca6_k3_sweep"
+  description: "SRNN: DCA(d=8), K=3, stickier transitions, wider shock regressor, optional rSLDS warm-start."
   seed: 0
 
 data:
@@ -14,17 +14,18 @@ data:
 model:
   K_states: 3
   latent_dim: 8
-  kappa: 1.0
+  # try a small sweep for stickiness; the CLI will run one config per value
+  kappa_values: [1.0, 3.0, 6.0]
 
 dr:
   method: "dca1"
-  n_components: 8
+  n_components: 8            # slightly lower than 8 for stability
   random_state: 0
 
 training:
   num_iters: 1200
-  window_size: 124
-  stride: 18
+  window_size: 180           # more temporal context -> fewer flips
+  stride: 18                 # keep similar overlap
   batch_size: 256
   lr: 1e-4
   overwrite: true
@@ -32,17 +33,17 @@ training:
   test_split: 0.2
   ms_per_sample: 1000
   rate_mode: "mean"
-  shock_expand_sec: 0.0
+  shock_expand_sec: 2.0      # widen shock influence to ±2s (still unsupervised)
 
 initialization:
-  warmup_epochs: 200
-  lambda_entropy: 1.0e-3
-  lambda_usage: 1.0e-2
+  warmup_epochs: 400         # longer warm-up to stabilize usage/entropy
+  lambda_entropy: 1.0e-4     # less pressure toward high-entropy transitions
+  lambda_usage: 2.0e-2       # keep states alive
 
 evaluation:
   prediction_horizons: [10, 20, 30, 40]
 
-# --- NEW: pass your rSLDS labels here ---
+# optional rSLDS warm-start for pi0 and transitions
 rslds_init:
-  z_hat_path: "/content/drive/MyDrive/sRNN/Rat15/initialization_for_srnn/drop_nan_15000i_z_hat_A.npy"
-  use_head: 200     # how many early samples to estimate pi0 (None = full series)
+  path: "/content/drive/MyDrive/sRNN/Rat15/initialization_for_srnn/drop_nan_15000i_z_hat_A.npy"  # <-- key is 'path' (not z_hat_path)
+  use_head: 200
