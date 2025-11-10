@@ -14,7 +14,7 @@ data:
 model:
   K_states: 3
   latent_dim: 8
-  kappa: 3.0              # <-- single value (recommended to start)
+  kappa: 5.0              # <-- single value (recommended to start)
 
 dr:
   method: "dca1"
