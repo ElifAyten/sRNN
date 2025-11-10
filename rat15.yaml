@@ -38,7 +38,7 @@ dr:
 # Training configuration
 # ===============================
 training:
-  num_iters: 3000           # longer training → better convergence
+  num_iters: 15000           # longer training → better convergence
   window_size: 40           # shorter temporal context
   stride: 10                # overlap between windows
   tbptt_steps: 24           # truncated backprop through time
