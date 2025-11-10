@@ -1,9 +1,15 @@
-# configs/rat15_srnn.yaml
+# ===============================
+# Experiment configuration: Rat 15 SRNN
+# ===============================
+
 experiment:
   name: "rat15_tbptt_w40_s10_k3"
-  description: "SRNN: DCA(d=8), K=3, TBPTT(24), window 40/stride 10."
+  description: "SRNN (DCA-8, K=3) with TBPTT=24, window=40/stride=10, and mild footshock modulation."
   seed: 0
 
+# ===============================
+# Data parameters
+# ===============================
 data:
   rat_id: 15
   data_root: "/content/drive/MyDrive/rSLDS"
@@ -11,21 +17,31 @@ data:
   subset: "responsive"
   h5_optional: false
 
+# ===============================
+# Model parameters
+# ===============================
 model:
   K_states: 3
   latent_dim: 8
-  kappa: 5.0              # <-- single value (recommended to start)
+  kappa: 6.0                # baseline stickiness → smoother transitions
+  shock_switch_beta: 4.0    # optional: allows state flips near shocks (unsupervised modulator)
 
+# ===============================
+# Dimensionality reduction
+# ===============================
 dr:
   method: "dca1"
   n_components: 8
   random_state: 0
 
+# ===============================
+# Training configuration
+# ===============================
 training:
-  num_iters: 2000
-  window_size: 40         # <-- your request
-  stride: 10              # <-- your request
-  tbptt_steps: 24         # <-- NEW: enables truncated BPTT
+  num_iters: 3000           # longer training → better convergence
+  window_size: 40           # shorter temporal context
+  stride: 10                # overlap between windows
+  tbptt_steps: 24           # truncated backprop through time
   batch_size: 256
   lr: 1e-4
   overwrite: true
@@ -33,17 +49,28 @@ training:
   test_split: 0.2
   ms_per_sample: 1000
   rate_mode: "mean"
-  shock_expand_sec: 2.0
+  shock_expand_sec: 2.0     # widen shock window to ±2 s for contextual influence
+  u_scale: 5.0              # scale shock regressor strength (optional, mild influence)
 
+# ===============================
+# Initialization & regularization
+# ===============================
 initialization:
-  warmup_epochs: 400
-  lambda_entropy: 1.0e-4
-  lambda_usage: 2.0e-2
+  warmup_epochs: 600         # stabilize usage/entropy early
+  lambda_entropy: 1.0e-5     # smaller = more confident transitions (stickier)
+  lambda_usage: 2.0e-2       # keeps all states active
 
+# ===============================
+# Evaluation
+# ===============================
 evaluation:
   prediction_horizons: [10, 20, 30, 40]
 
+# ===============================
+# Optional warm-start from rSLDS
+# ===============================
 rslds_init:
   path: "/content/drive/My Drive/sRNN/Rat15/initialization for srnn/drop_nan_15000i_z_hat_A.npy"
   use_head: 200
+
 
