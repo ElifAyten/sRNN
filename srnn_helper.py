@@ -6,6 +6,7 @@
 # - optional warm-start from rSLDS (pi0 + transitions)
 # - kappa sweep support
 # - TBPTT support (truncate backprop through time over window chunks)
+# - fully UNSUPERVISED option (ignore behavior/shock inputs during training)
 # - prediction evaluation via post-hoc linear decoder h->Z
 # - DCA-lite or PCA front-end, robust NaN handling
 # - CLI that reads YAML, supports multiple rat IDs, and rSLDS path templates
@@ -61,6 +62,7 @@ def get_device() -> str:
 # =========================
 # Paths
 # =========================
+
 def h5_path_for_rat(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
     """Expected HDF5 location."""
     root = Path(data_root)
@@ -97,6 +99,7 @@ def run_dir(
 # =========================
 # IO & preprocessing
 # =========================
+
 def read_wide_csv(csv_path: Path) -> pd.DataFrame:
     try:
         return pd.read_csv(csv_path)
@@ -167,6 +170,7 @@ def downsample_FR_and_u(FR_TN, u_T1, *, ms_per_sample=10, rate_mode="mean"):
 # =========================
 # DCA-lite / PCA embedding
 # =========================
+
 def _time_lagged_projection(X_TN, d=8, lag=1, ridge=1e-6, symmetric=False):
     """
     DCA-lite: dominant predictive components from lag-1 covariance.
@@ -217,6 +221,7 @@ def make_embedding(FR_sec, method="dca1", n_components=8, random_state=None):
 # =========================
 # Window dataset + split
 # =========================
+
 class NeuralWindows(Dataset):
     """Yields (window_x, window_u) with shape (W, d_in) and (W, 1)."""
     def __init__(self, Z_Td: np.ndarray, u_T1: np.ndarray, window:int=100, stride:int=1):
@@ -274,14 +279,16 @@ def subset_sampler(indices: List[int]) -> torch.utils.data.Sampler:
 
 
 # =========================
-# Patch SRNN package (add TBPTT support via h0 carry)
+# Patch SRNN package (TBPTT + optional no-input transitions)
 # =========================
+
 def apply_srnn_patches():
     """
     Patches the upstream sRNN implementation:
     - robust inference forward (no NaNs, fixed init)
     - accepts optional h0 and returns final hidden (for TBPTT)
     - generative forward returning log-probs for transitions/dynamics
+    - supports ignoring external inputs (purely recurrent)
     """
     try:
         from sRNN.networks import InferenceNetwork as _Inf, GenerativeSRNN as _Gen
@@ -308,7 +315,6 @@ def apply_srnn_patches():
         if h0 is None:
             h0 = torch.zeros(num_layers * num_dirs, B, hidden_size, device=x.device, dtype=x.dtype).contiguous()
         else:
-            # safety: ensure correct shape
             if h0.dim() != 3:
                 raise ValueError("h0 must have shape (num_layers*num_dirs, B, hidden_size)")
         h_seq, h_last = self.rnn(x, h0)
@@ -318,7 +324,7 @@ def apply_srnn_patches():
         std = torch.nan_to_num(std, 1e-3, 1.0, 1e-3)
         q = torch.distributions.Independent(torch.distributions.Normal(m, std), 1)
         h = torch.nan_to_num(q.rsample(), 0.0, 0.0, 0.0).contiguous()
-        return h, q, h_last  # <--- return final hidden for TBPTT carry
+        return h, q, h_last
 
     def _gen_forward(self, x, u, h_samp):
         # Light-weight generator with per-state RNN on x to predict mean h
@@ -337,7 +343,8 @@ def apply_srnn_patches():
         # Parametrized transitions A(h_{t-1}, u_t)
         if not hasattr(self, "trans_h"):
             self.trans_h = nn.Linear(H, K * K, bias=True).to(device)
-        if not hasattr(self, "trans_u"):
+        # create trans_u lazily only when used
+        if getattr(self, "use_inputs", False) and not hasattr(self, "trans_u"):
             self.trans_u = nn.Linear(u.size(-1), K * K, bias=False).to(device)
 
         # K per-state simple RNNs to evolve h
@@ -362,8 +369,11 @@ def apply_srnn_patches():
 
         for t in range(1, T):
             Ah = self.trans_h(h_samp[:, t - 1, :])
-            Au = self.trans_u(u[:, t, :])
-            A = (Ah + Au).view(B, K, K)
+            if getattr(self, "use_inputs", False):
+                Au = self.trans_u(u[:, t, :])
+                A = (Ah + Au).view(B, K, K)
+            else:
+                A = Ah.view(B, K, K)
             kappa_val = float(getattr(self, "kappa", 0.0))
             if kappa_val != 0.0:
                 A = A + torch.eye(K, device=device).view(1, K, K) * kappa_val
@@ -391,6 +401,7 @@ def apply_srnn_patches():
 # =========================
 # Config & rSLDS warm-start
 # =========================
+
 @dataclass
 class TrainConfig:
     # data
@@ -409,6 +420,7 @@ class TrainConfig:
     K_states: int = 5
     latent_dim: int = 8
     kappa: float = 0.0
+    use_inputs: bool = True           # <-- NEW: if False, ignore external inputs entirely
 
     # training
     num_iters: int = 2000
@@ -421,7 +433,7 @@ class TrainConfig:
     test_split: float = 0.2
     overwrite: bool = False
     verbose: bool = True
-    tbptt_steps: Optional[int] = None   # <--- NEW
+    tbptt_steps: Optional[int] = None
 
     # regularization
     lambda_entropy: float = 1.0e-3
@@ -498,6 +510,7 @@ def _estimate_pi0_and_A(z: np.ndarray, K: int, use_head: Optional[int] = 200):
 # =========================
 # Training / evaluation
 # =========================
+
 def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     device = get_device()
     torch.manual_seed(cfg.seed)
@@ -573,6 +586,9 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         print(f"↳ inferred ms_per_sample ≈ {msps} ms")
 
     FR_sec, u_sec = downsample_FR_and_u(FR_TN, footshock, ms_per_sample=msps, rate_mode=cfg.rate_mode)
+    if not cfg.use_inputs:
+        # fully unsupervised training: zero out inputs
+        u_sec = np.zeros((FR_sec.shape[0], 1), dtype=FR_sec.dtype)
     if cfg.verbose:
         nz = int(np.count_nonzero(u_sec))
         uniq = np.unique(u_sec).tolist()
@@ -638,6 +654,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     infer = _Inf(input_dim=d_in, hidden_dim=cfg.latent_dim).to(device)
     gen = _Gen(D=d_in, K=cfg.K_states, H=cfg.latent_dim).to(device)
     gen.kappa = float(cfg.kappa)
+    gen.use_inputs = bool(cfg.use_inputs)  # <-- set flag for generator
     infer.apply(_init_weights)
     gen.apply(_init_weights)
 
@@ -651,13 +668,13 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
                 gen.pi0 = nn.Parameter(torch.zeros(cfg.K_states, device=device))
             if not hasattr(gen, "trans_h"):
                 gen.trans_h = nn.Linear(cfg.latent_dim, cfg.K_states * cfg.K_states, bias=True).to(device)
-            if not hasattr(gen, "trans_u"):
+            if getattr(gen, "use_inputs", False) and not hasattr(gen, "trans_u"):
                 gen.trans_u = nn.Linear(1, cfg.K_states * cfg.K_states, bias=False).to(device)
             with torch.no_grad():
                 gen.pi0.data = torch.from_numpy(log_pi).to(device)
                 nn.init.constant_(gen.trans_h.weight, 0.0)
                 nn.init.constant_(gen.trans_h.bias, 0.0)
-                if gen.trans_u.weight is not None:
+                if getattr(gen, "use_inputs", False) and gen.trans_u.weight is not None:
                     nn.init.constant_(gen.trans_u.weight, 0.0)
                 gen.trans_h.bias.copy_(torch.from_numpy(logA.reshape(-1)).to(device))
             if cfg.verbose:
@@ -670,7 +687,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     opt = torch.optim.Adam(params, lr=cfg.lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=cfg.num_iters, eta_min=cfg.lr * 0.1)
 
-    # ----- helpers (now TBPTT-aware) -----
+    # ----- helpers (TBPTT-aware) -----
     def _batch_step_chunk(x_chunk, u_chunk, warmup=True, h0: Optional[torch.Tensor] = None):
         """One truncated chunk: returns (loss, elbo, h_last_detached)."""
         h_samp, q_dist, h_last = infer(x_chunk, h0=h0)
@@ -725,7 +742,6 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
                 # truncated BPTT across chunks of length tbptt
                 B, Wtot, _ = x.shape
                 h_carry = None
-                # step optimizer per chunk (standard TBPTT practice)
                 for t0 in range(0, Wtot, tbptt):
                     t1 = min(Wtot, t0 + tbptt)
                     x_chunk = x[:, t0:t1, :]
@@ -733,13 +749,11 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
                     opt.zero_grad()
                     loss, elbo, h_carry = _batch_step_chunk(x_chunk, u_chunk, warmup=warm, h0=h_carry)
                     if torch.isnan(loss):
-                        # reset carry if numerical issue
                         h_carry = None
                         continue
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(params, 5.0)
                     opt.step()
-                    # detach carry to truncate graph
                     h_carry = h_carry.detach()
                     total += float(loss.item()); total_elbo += float(elbo.item()); nb += 1
 
@@ -768,7 +782,6 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         for xb, ub in train_loader:
             x = xb.to(device, non_blocking=True)
             u = ub.to(device, non_blocking=True)
-            # full forward (no TBPTT needed for evaluation snapshot)
             h_samp, _, _ = infer(x, h0=None)
             p0, p_s, p_h, *_ = gen(x, u, h_samp)
             z_hat = torch.argmax(torch.logsumexp(p_s, dim=-1), dim=-1)  # (B,T)
@@ -841,8 +854,11 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
                     preds = []
                     for t in range(t0 + 1, t0 + 1 + Kpred):
                         Ah = gen.trans_h(h_t)
-                        Au = gen.trans_u(u[:, t, :])
-                        A = (Ah + Au).view(B, gen.K, gen.K)
+                        if getattr(gen, "use_inputs", False):
+                            Au = gen.trans_u(u[:, t, :])
+                            A = (Ah + Au).view(B, gen.K, gen.K)
+                        else:
+                            A = Ah.view(B, gen.K, gen.K)
                         A = A - torch.logsumexp(A, dim=2, keepdim=True)
                         z_next = torch.argmax(A.mean(dim=1), dim=1)
                         out_list = []
@@ -936,6 +952,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
 # =========================
 # Batch helpers (optional)
 # =========================
+
 def run_kappa_sweep(*,
                     rat: int,
                     data_root: str | Path,
@@ -960,7 +977,8 @@ def run_kappa_sweep(*,
                     rate_mode: str = "mean",
                     shock_expand_sec: float = 0.0,
                     prediction_horizons=(10,20,30,40),
-                    tbptt_steps: Optional[int] = None):
+                    tbptt_steps: Optional[int] = None,
+                    use_inputs: bool = True):
     results = []
     for kappa in kappa_grid:
         cfg = TrainConfig(
@@ -989,6 +1007,7 @@ def run_kappa_sweep(*,
             shock_expand_sec=shock_expand_sec,
             prediction_horizons=tuple(prediction_horizons),
             tbptt_steps=tbptt_steps,
+            use_inputs=use_inputs,
         )
         res = fit_srnn_with_split(cfg)
         results.append({"kappa": kappa, **res})
@@ -998,6 +1017,7 @@ def run_kappa_sweep(*,
 # =========================
 # CLI (YAML)
 # =========================
+
 if __name__ == "__main__":
     import argparse, yaml
 
@@ -1058,6 +1078,8 @@ if __name__ == "__main__":
             rslds_init_use_head=rslds_use_head,
             prediction_horizons=tuple(int(h) for h in horizons),
             tbptt_steps=int(train.get("tbptt_steps")) if ("tbptt_steps" in train and train.get("tbptt_steps") is not None) else None,
+            use_inputs=bool(model.get("use_inputs", True)),  # <-- expose unsupervised toggle in YAML
         )
         out = fit_srnn_with_split(cfg)
         print(json.dumps({"rat_id": rid, **out}, indent=2))
+
