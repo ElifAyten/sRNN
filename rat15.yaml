@@ -24,6 +24,7 @@ model:
   K_states: 3
   latent_dim: 8
   kappa: 6.0                # baseline stickiness → smoother transitions
+  use_inputs : false
   shock_switch_beta: 4.0    # optional: allows state flips near shocks (unsupervised modulator)
 
 # ===============================
