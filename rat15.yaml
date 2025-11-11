@@ -1,10 +1,10 @@
-# ===============================
-# Experiment configuration: Rat 15 SRNN
+ # ===============================
+# Experiment configuration: Rat 15 SRNN (UNSUPERVISED)
 # ===============================
 
 experiment:
-  name: "rat15_tbptt_w40_s10_k3"
-  description: "SRNN (DCA-8, K=3) with TBPTT=24, window=40/stride=10, and mild footshock modulation."
+  name: "rat15_tbptt_w40_s10_k3_unsup"
+  description: "SRNN (DCA-8, K=3), TBPTT=24, window=40/stride=10, NO inputs (fully recurrent/unsupervised)."
   seed: 0
 
 # ===============================
@@ -23,9 +23,8 @@ data:
 model:
   K_states: 3
   latent_dim: 8
-  kappa: 6.0                # baseline stickiness → smoother transitions
-  use_inputs : false
-  shock_switch_beta: 4.0    # optional: allows state flips near shocks (unsupervised modulator)
+  kappa: 6.0          # stickiness for smoother transitions
+  use_inputs: false   # <-- KEY: disable footshock inputs entirely
 
 # ===============================
 # Dimensionality reduction
@@ -39,10 +38,10 @@ dr:
 # Training configuration
 # ===============================
 training:
-  num_iters: 15000           # longer training → better convergence
-  window_size: 40           # shorter temporal context
-  stride: 10                # overlap between windows
-  tbptt_steps: 24           # truncated backprop through time
+  num_iters: 15000
+  window_size: 40
+  stride: 10
+  tbptt_steps: 24
   batch_size: 256
   lr: 1e-4
   overwrite: true
@@ -50,16 +49,18 @@ training:
   test_split: 0.2
   ms_per_sample: 1000
   rate_mode: "mean"
-  shock_expand_sec: 2.0     # widen shock window to ±2 s for contextual influence
-  u_scale: 5.0              # scale shock regressor strength (optional, mild influence)
+
+  # Removed shock influence since we're unsupervised:
+  # shock_expand_sec: 2.0
+  # u_scale: 5.0
 
 # ===============================
 # Initialization & regularization
 # ===============================
 initialization:
-  warmup_epochs: 600         # stabilize usage/entropy early
-  lambda_entropy: 1.0e-5     # smaller = more confident transitions (stickier)
-  lambda_usage: 2.0e-2       # keeps all states active
+  warmup_epochs: 700
+  lambda_entropy: 1.0e-5
+  lambda_usage: 2.0e-2
 
 # ===============================
 # Evaluation
@@ -72,6 +73,5 @@ evaluation:
 # ===============================
 rslds_init:
   path: "/content/drive/My Drive/sRNN/Rat15/initialization for srnn/drop_nan_15000i_z_hat_A.npy"
-  use_head: 200
-
+  use_head: 300
 
