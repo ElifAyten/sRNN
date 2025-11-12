@@ -1,0 +1,84 @@
+# ===============================
+# Experiment configuration: Rat 15 SRNN (with footshock inputs)
+# ===============================
+
+experiment:
+  name: "rat15_tbptt_w40_s10_k3_inputs"
+  description: "SRNN (DCA-8, K=3), TBPTT=24, window=40/stride=10; WITH footshock inputs."
+  seed: 0
+  mode: "with_inputs"     # metadata only
+
+# ===============================
+# Data parameters
+# ===============================
+data:
+  rat_id: 15
+  data_root: "/content/drive/MyDrive/rSLDS"
+  outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
+  subset: "responsive"
+  h5_optional: false
+
+# ===============================
+# Model parameters
+# ===============================
+model:
+  K_states: 3            # keep fixed
+  latent_dim: 8          # keep fixed
+  kappa: 6.0
+  use_inputs: true       # << enable footshock inputs
+
+# ===============================
+# Dimensionality reduction
+# ===============================
+dr:
+  method: "dca1"
+  n_components: 8
+  random_state: 0
+
+# ===============================
+# Training configuration
+# ===============================
+training:
+  num_iters: 15000
+  window_size: 40
+  stride: 10
+  tbptt_steps: 24
+  batch_size: 256
+  lr: 1e-4
+  overwrite: true
+  verbose: true
+  test_split: 0.2
+  ms_per_sample: 1000
+  rate_mode: "mean"
+
+  # Footshock input params (used because model.use_inputs=true)
+  shock_expand_sec: 1.5    # try 1.0–2.0
+  u_scale: 2.0             # try 2.0 and 5.0 in the grid if you like
+
+# ===============================
+# Initialization & regularization
+# ===============================
+initialization:
+  warmup_epochs: 700
+  lambda_entropy: 1.0e-5
+  lambda_usage: 2.0e-2
+
+# ===============================
+# Evaluation
+# ===============================
+evaluation:
+  prediction_horizons: [10, 20, 30, 40]
+
+# ===============================
+# Optional warm-start from rSLDS
+# ===============================
+rslds_init:
+  path: "/content/drive/My Drive/sRNN/Rat15/initialization for srnn/drop_nan_15000i_z_hat_A.npy"
+  use_head: 500
+
+# ===============================
+# Small hyperparameter grid
+# ===============================
+search:
+  kappa: [4.0, 6.0, 8.0, 10.0]
+  lr: [1e-3, 5e-4, 1e-4]
