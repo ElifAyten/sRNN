@@ -3,7 +3,7 @@
 # ===============================
 
 experiment:
-  name: "rat15_tbptt_w40_s10_k3_inputs"
+  name: "rat15_tbptt_w40_s10_k3_inputs_u2_sh1.5"   # << ADDED descriptive suffix
   description: "SRNN (DCA-8, K=3), TBPTT=24, window=40/stride=10; WITH footshock inputs."
   seed: 0
   mode: "with_inputs"     # metadata only
@@ -14,7 +14,8 @@ experiment:
 data:
   rat_id: 15
   data_root: "/content/drive/MyDrive/rSLDS"
-  outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
+  # << Optional but recommended: save input runs in their own folder
+  outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs/with_inputs"
   subset: "responsive"
   h5_optional: false
 
@@ -22,10 +23,11 @@ data:
 # Model parameters
 # ===============================
 model:
-  K_states: 3            # keep fixed
-  latent_dim: 8          # keep fixed
+  K_states: 3
+  latent_dim: 8
   kappa: 6.0
-  use_inputs: true       # << enable footshock inputs
+  use_inputs: true
+  name_suffix: "inputs_u2_sh1.5"   # << NEW field for naming runs safely
 
 # ===============================
 # Dimensionality reduction
@@ -45,15 +47,15 @@ training:
   tbptt_steps: 24
   batch_size: 256
   lr: 1e-4
-  overwrite: true
+  overwrite: false           # << CHANGED to prevent accidental overwrites
   verbose: true
   test_split: 0.2
   ms_per_sample: 1000
   rate_mode: "mean"
 
-  # Footshock input params (used because model.use_inputs=true)
-  shock_expand_sec: 1.5    # try 1.0–2.0
-  u_scale: 2.0             # try 2.0 and 5.0 in the grid if you like
+  # Footshock input params
+  shock_expand_sec: 1.5
+  u_scale: 2.0
 
 # ===============================
 # Initialization & regularization
@@ -82,3 +84,4 @@ rslds_init:
 search:
   kappa: [4.0, 6.0, 8.0, 10.0]
   lr: [1e-3, 5e-4, 1e-4]
+
