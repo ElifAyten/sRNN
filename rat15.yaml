@@ -1,11 +1,13 @@
- # ===============================
-# Experiment configuration: Rat 15 SRNN (UNSUPERVISED)
+# ===============================
+# Experiment configuration: Rat 15 SRNN (single-file, selectable mode)
 # ===============================
 
 experiment:
-  name: "rat15_tbptt_w40_s10_k3_unsup"
-  description: "SRNN (DCA-8, K=3), TBPTT=24, window=40/stride=10, NO inputs (fully recurrent/unsupervised)."
+  name: "rat15_tbptt_w40_s10_k3"
+  description: "SRNN (DCA-8, K=3), TBPTT=24, window=40/stride=10; selectable inputs."
   seed: 0
+  # mode is just metadata; you choose at run time via overrides or wrapper
+  mode: "unsupervised"     # or "with_inputs"
 
 # ===============================
 # Data parameters
@@ -21,10 +23,10 @@ data:
 # Model parameters
 # ===============================
 model:
-  K_states: 3
-  latent_dim: 8
-  kappa: 6.0          # stickiness for smoother transitions
-  use_inputs: false   # <-- KEY: disable footshock inputs entirely
+  K_states: 3            # << fixed as you asked
+  latent_dim: 8          # << fixed as you asked
+  kappa: 6.0             # (swept via search grid below)
+  use_inputs: false      # default = unsupervised; flip at run time to true for footshock-input runs
 
 # ===============================
 # Dimensionality reduction
@@ -43,23 +45,23 @@ training:
   stride: 10
   tbptt_steps: 24
   batch_size: 256
-  lr: 1e-4
+  lr: 1e-4               # (swept via search grid below)
   overwrite: true
   verbose: true
   test_split: 0.2
   ms_per_sample: 1000
   rate_mode: "mean"
 
-  # Removed shock influence since we're unsupervised:
-  # shock_expand_sec: 2.0
-  # u_scale: 5.0
+  # Footshock input params (only used when model.use_inputs=true)
+  shock_expand_sec: 1.5  # temporal support around shocks (1.0–2.0 recommended)
+  u_scale: 2.0           # input scaling (also try 5.0 if desired)
 
 # ===============================
 # Initialization & regularization
 # ===============================
 initialization:
   warmup_epochs: 700
-  lambda_entropy: 1.0e-5
+  lambda_entropy: 1.0e-5   # if state collapse, try 1.0e-4
   lambda_usage: 2.0e-2
 
 # ===============================
@@ -73,5 +75,11 @@ evaluation:
 # ===============================
 rslds_init:
   path: "/content/drive/My Drive/sRNN/Rat15/initialization for srnn/drop_nan_15000i_z_hat_A.npy"
-  use_head: 300
+  use_head: 500
 
+# ===============================
+# Small hyperparameter grid (metadata; safe if loader ignores)
+# ===============================
+search:
+  kappa: [4.0, 6.0, 8.0, 10.0]
+  lr: [1e-3, 5e-4, 1e-4]
