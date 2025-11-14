@@ -580,10 +580,10 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
                 print(f"[u_raw] WARNING: {shocks_path} not found → using zeros")
             footshock_native = np.zeros((T_native, 1), dtype=float)
 
-        msps = msps_native
-        FR_sec, u_sec = downsample_FR_and_u(
-            FR_TN, footshock_native, ms_per_sample=msps, rate_mode=cfg.rate_mode
-        )
+        msps = msps_native  # 100 ms bins (for metadata only)
+        # DO NOT downsample again; work directly at 100 ms resolution
+        FR_sec, u_sec = FR_TN, footshock_native
+
 
     else:
         # ---------- FALLBACK: old CSV+HDF5 pipeline ----------
