@@ -15,8 +15,8 @@ experiment:
 data:
   rat_id: 15
   # UPDATED: new root for your re-organized data
-  data_root: "/content/drive/MyDrive/RSLDS_SRNN"
-  outputs_root: "/content/drive/MyDrive/RSLDS_SRNN/sRNN-Model-Outputs"
+  data_root: "/content/drive/MyDrive/rSLDS"
+  outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
   subset: "responsive"
   h5_optional: false
 
