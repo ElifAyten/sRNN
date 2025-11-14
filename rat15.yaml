@@ -14,8 +14,9 @@ experiment:
 # ===============================
 data:
   rat_id: 15
-  data_root: "/content/drive/MyDrive/rSLDS"
-  outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
+  # UPDATED: new root for your re-organized data
+  data_root: "/content/drive/MyDrive/RSLDS_SRNN"
+  outputs_root: "/content/drive/MyDrive/RSLDS_SRNN/sRNN-Model-Outputs"
   subset: "responsive"
   h5_optional: false
 
@@ -26,7 +27,7 @@ model:
   K_states: 3            # << fixed as you asked
   latent_dim: 8          # << fixed as you asked
   kappa: 6.0             # (swept via search grid below)
-  use_inputs: false      # default = unsupervised; flip at run time to true for footshock-input runs
+  use_inputs: false      # << inputs DISABLED (unsupervised SRNN)
 
 # ===============================
 # Dimensionality reduction
@@ -49,12 +50,15 @@ training:
   overwrite: true
   verbose: true
   test_split: 0.2
-  ms_per_sample: 1000
+
+  # IMPORTANT: native bin size of the FR input
+  # Your NpxFiringRate_100msBINSRat15.npy are 100 ms bins → set 100 (not 1000)
+  ms_per_sample: 100
   rate_mode: "mean"
 
   # Footshock input params (only used when model.use_inputs=true)
   shock_expand_sec: 1.5  # temporal support around shocks (1.0–2.0 recommended)
-  u_scale: 2.0           # input scaling (also try 5.0 if desired)
+  u_scale: 2.0           # (currently unused in code, but fine as metadata)
 
 # ===============================
 # Initialization & regularization
@@ -74,7 +78,8 @@ evaluation:
 # Optional warm-start from rSLDS
 # ===============================
 rslds_init:
-  path: "/content/drive/My Drive/sRNN/Rat15/initialization for srnn/drop_nan_15000i_z_hat_A.npy"
+  # UPDATED: new rSLDS z_hat location with template for rat_id
+  path: "/content/drive/MyDrive/RSLDS_SRNN/ModelOutputs/BehaviouralModelrSLDS/Rat{rat_id}/behav_rslds_dropNaN_K3_D1_it12000_z_hat.npy"
   use_head: 500
 
 # ===============================
