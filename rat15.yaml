@@ -14,20 +14,26 @@ experiment:
 # ===============================
 data:
   rat_id: 15
-  # UPDATED: new root for your re-organized data
-  data_root: "/content/drive/MyDrive/rSLDS"
+  data_root: "/content/drive/MyDrive/rSLDS"                # <- rSLDS root
   outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
   subset: "responsive"
   h5_optional: false
+
+  # NOTE:
+  # Firing rates will be loaded in this order:
+  # 1) If it exists:
+  #    /content/drive/MyDrive/RSLDS_SRNN/Downsampled-FiringRates/NpxFiringRate_100msBINSRat15.npy
+  #    (true 100 ms binned FR)
+  # 2) Otherwise: CSV under Sub-Data/Only-Responsive/... as before.
 
 # ===============================
 # Model parameters
 # ===============================
 model:
-  K_states: 3            # << fixed as you asked
-  latent_dim: 8          # << fixed as you asked
-  kappa: 6.0             # (swept via search grid below)
-  use_inputs: false      # << inputs DISABLED (unsupervised SRNN)
+  K_states: 3            # fixed
+  latent_dim: 8          # fixed
+  kappa: 6.0             # you can sweep this later
+  use_inputs: false      # <<< UNSUPERVISED: ignore footshocks during training
 
 # ===============================
 # Dimensionality reduction
@@ -46,26 +52,26 @@ training:
   stride: 10
   tbptt_steps: 24
   batch_size: 256
-  lr: 1e-4               # (swept via search grid below)
+  lr: 1e-4
   overwrite: true
   verbose: true
   test_split: 0.2
 
   # IMPORTANT: native bin size of the FR input
-  # Your NpxFiringRate_100msBINSRat15.npy are 100 ms bins → set 100 (not 1000)
+  # For NpxFiringRate_100msBINSRat15.npy, this *is* 100 ms:
   ms_per_sample: 100
   rate_mode: "mean"
 
   # Footshock input params (only used when model.use_inputs=true)
-  shock_expand_sec: 1.5  # temporal support around shocks (1.0–2.0 recommended)
-  u_scale: 2.0           # (currently unused in code, but fine as metadata)
+  shock_expand_sec: 1.5   # temporal support around shocks (in seconds)
+  u_scale: 2.0            # (currently unused in code, metadata only)
 
 # ===============================
 # Initialization & regularization
 # ===============================
 initialization:
   warmup_epochs: 700
-  lambda_entropy: 1.0e-5   # if state collapse, try 1.0e-4
+  lambda_entropy: 1.0e-5   # if state collapse, can increase to 1.0e-4
   lambda_usage: 2.0e-2
 
 # ===============================
@@ -78,7 +84,7 @@ evaluation:
 # Optional warm-start from rSLDS
 # ===============================
 rslds_init:
-  # UPDATED: new rSLDS z_hat location with template for rat_id
+  # Template: will become Rat15 automatically in srnn_helper.py
   path: "/content/drive/MyDrive/RSLDS_SRNN/ModelOutputs/BehaviouralModelrSLDS/Rat{rat_id}/behav_rslds_dropNaN_K3_D1_it12000_z_hat.npy"
   use_head: 500
 
@@ -88,3 +94,4 @@ rslds_init:
 search:
   kappa: [4.0, 6.0, 8.0, 10.0]
   lr: [1e-3, 5e-4, 1e-4]
+
