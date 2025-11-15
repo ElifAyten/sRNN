@@ -212,7 +212,8 @@ def _time_lagged_projection(X_TN, d=8, lag=1, ridge=1e-6, symmetric=False):
         M = 0.5 * (M + M.T)
         vals, vecs = eigh(M)
         V = vecs[:, np.argsort(vals)[-d:]]
-        Q, _ = np.linalg.qr(V); V = Q
+        Q, _ = np.linalg.qr(V)
+        V = Q
     else:
         w, Vc0 = eigh(C0)
         w = np.maximum(w, ridge)
@@ -238,7 +239,7 @@ def make_embedding(FR_sec, method="dca1", n_components=8, random_state=None):
         return Z.astype(np.float32), {
             "method": method,
             "n_components": int(Z.shape[1]),
-            "lag": 1
+            "lag": 1,
         }
     else:
         raise ValueError(f"Unknown DR method: {method}")
@@ -250,7 +251,7 @@ def make_embedding(FR_sec, method="dca1", n_components=8, random_state=None):
 
 class NeuralWindows(Dataset):
     """Yields (window_x, window_u) with shape (W, d_in) and (W, 1)."""
-    def __init__(self, Z_Td: np.ndarray, u_T1: np.ndarray, window:int=100, stride:int=1):
+    def __init__(self, Z_Td: np.ndarray, u_T1: np.ndarray, window: int = 100, stride: int = 1):
         X = np.asarray(Z_Td, np.float32)
         u = np.asarray(u_T1, np.float32)
         if u.ndim == 1:
@@ -575,8 +576,8 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
                 "Could not find 'firing_rates' in HDF5. "
                 f"Available top-level keys: {keys}"
             )
-        FR_10 = h5["firing_rates"][...]  # (T_10, N)
-        time_10 = h5["time"][...] if "time" in h5 else np.arange(FR_10.shape[0]) * 0.01
+        FR_10 = h5["firing_rates"][...]  # may be (N, T) or (T, N)
+        time_10 = h5["time"][...] if "time" in h5 else np.arange(FR_10.shape[-1]) * 0.01
         shock_times = h5["footshock_times"][...] if "footshock_times" in h5 else None
         pupil_10 = h5["pupil_diameter"][...] if "pupil_diameter" in h5 else None
         speed_10 = h5["speed"][...] if "speed" in h5 else None
@@ -593,6 +594,20 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
             print(f"[H5] pupil_10 shape={np.shape(pupil_10)}")
         if speed_10 is not None:
             print(f"[H5] speed_10 shape={np.shape(speed_10)}")
+
+    # --- fix orientation: ensure FR_10 is (T, N) to match time_10 ---
+    if FR_10.shape[0] == len(time_10):
+        # already (T, N)
+        pass
+    elif FR_10.shape[1] == len(time_10):
+        # currently (N, T) -> transpose to (T, N)
+        FR_10 = FR_10.T
+        if cfg.verbose:
+            print(f"[H5] transposed FR_10 to (T,N) → {FR_10.shape}")
+    else:
+        raise ValueError(
+            f"[H5] firing_rates shape {FR_10.shape} inconsistent with time length {len(time_10)}"
+        )
 
     # ensure 1D for behavior arrays
     def _reshape_1d(x):
@@ -637,13 +652,14 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         time_100, shock_times, expand_sec=float(cfg.shock_expand_sec)
     )  # (T_100, 1)
 
-    # This is what the model *actually* sees:
+    # This is what the model *actually* sees as input:
     if cfg.use_inputs:
         u_model = np.nan_to_num(shock_reg_100.astype(FR_100.dtype), nan=0.0, posinf=0.0, neginf=0.0)
         if cfg.verbose:
             nz = int(np.count_nonzero(u_model))
             print(f"[inputs] use_inputs=True → u_model nonzero_samples={nz}")
     else:
+        # fully UNSUPERVISED: no shocks in transitions
         u_model = np.zeros((FR_100.shape[0], 1), dtype=FR_100.dtype)
         if cfg.verbose:
             print(f"[inputs] use_inputs=False → u_model zeroed, shape={u_model.shape}")
@@ -780,12 +796,15 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     tbptt = cfg.tbptt_steps if (cfg.tbptt_steps and cfg.tbptt_steps > 0) else None
 
     for epoch in range(1, cfg.num_iters + 1):
-        infer.train(); gen.train()
+        infer.train()
+        gen.train()
         base_lr = cfg.lr
         for g in opt.param_groups:
             g["lr"] = (base_lr * epoch / 10.0) if epoch <= 10 else g.get("lr", base_lr)
 
-        total = 0.0; total_elbo = 0.0; nb = 0
+        total = 0.0
+        total_elbo = 0.0
+        nb = 0
         for xb, ub in train_loader:
             x = xb.to(device, non_blocking=True)  # (B, W, D)
             u = ub.to(device, non_blocking=True)  # (B, W, 1)
@@ -800,7 +819,9 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(params, 5.0)
                 opt.step()
-                total += float(loss.item()); total_elbo += float(elbo.item()); nb += 1
+                total += float(loss.item())
+                total_elbo += float(elbo.item())
+                nb += 1
             else:
                 # truncated BPTT across chunks of length tbptt
                 B, Wtot, _ = x.shape
@@ -818,7 +839,9 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
                     torch.nn.utils.clip_grad_norm_(params, 5.0)
                     opt.step()
                     h_carry = h_carry.detach()
-                    total += float(loss.item()); total_elbo += float(elbo.item()); nb += 1
+                    total += float(loss.item())
+                    total_elbo += float(elbo.item())
+                    nb += 1
 
         if nb == 0:
             warnings.warn("No batches were processed. Check window/stride and dataset length.")
@@ -833,13 +856,20 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
 
         if epoch % max(1, cfg.num_iters // 6) == 0:
             torch.save(
-                {"epoch": epoch, "infer": infer.state_dict(), "gen": gen.state_dict(),
-                 "opt": opt.state_dict(), "loss_history": losses, "elbo_history": elbos},
-                save_dir / f"epoch_{epoch}.pth"
+                {
+                    "epoch": epoch,
+                    "infer": infer.state_dict(),
+                    "gen": gen.state_dict(),
+                    "opt": opt.state_dict(),
+                    "loss_history": losses,
+                    "elbo_history": elbos,
+                },
+                save_dir / f"epoch_{epoch}.pth",
             )
 
     # ----- inference snapshot on train loader (for usage/dwell) -----
-    infer.eval(); gen.eval()
+    infer.eval()
+    gen.eval()
     with torch.no_grad():
         all_h, all_z = [], []
         for xb, ub in train_loader:
@@ -869,9 +899,12 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         for v in z_flat:
             v = int(v)
             if cur is None or v == cur:
-                run += 1; cur = v
+                run += 1
+                cur = v
             else:
-                runs.append(run); cur = v; run = 1
+                runs.append(run)
+                cur = v
+                run = 1
         if run > 0:
             runs.append(run)
         if runs:
@@ -895,7 +928,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         W_full = np.linalg.lstsq(
             H_aug.T @ H_aug + lam * np.eye(cfg.latent_dim + 1),
             H_aug.T @ Z_mat,
-            rcond=None
+            rcond=None,
         )[0]               # ((H+1), d_in)
         W = W_full[:-1, :]
         b = W_full[-1:, :]
@@ -988,9 +1021,12 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     # quick ELBO plot
     plt.figure()
     plt.plot(-np.array(losses), label="ELBO (approx)")
-    plt.xlabel("epoch"); plt.ylabel("ELBO ↑")
-    plt.legend(); plt.tight_layout()
-    plt.savefig(save_dir / "elbo.png"); plt.close()
+    plt.xlabel("epoch")
+    plt.ylabel("ELBO ↑")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(save_dir / "elbo.png")
+    plt.close()
 
     # usage bar
     if usage:
@@ -1000,13 +1036,19 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         plt.bar(keys, vals)
         plt.ylabel("state usage")
         plt.tight_layout()
-        plt.savefig(save_dir / "state_usage.png"); plt.close()
+        plt.savefig(save_dir / "state_usage.png")
+        plt.close()
 
     # finalize checkpoint
     torch.save(
-        {"epoch": cfg.num_iters, "infer": infer.state_dict(), "gen": gen.state_dict(),
-         "loss_history": losses, "elbo_history": elbos},
-        save_dir / "final_checkpoint.pth"
+        {
+            "epoch": cfg.num_iters,
+            "infer": infer.state_dict(),
+            "gen": gen.state_dict(),
+            "loss_history": losses,
+            "elbo_history": elbos,
+        },
+        save_dir / "final_checkpoint.pth",
     )
 
     out = {
@@ -1050,7 +1092,7 @@ def run_kappa_sweep(*,
                     ms_per_sample: Optional[int] = None,
                     rate_mode: str = "mean",
                     shock_expand_sec: float = 0.0,
-                    prediction_horizons=(10,20,30,40),
+                    prediction_horizons=(10, 20, 30, 40),
                     tbptt_steps: Optional[int] = None,
                     use_inputs: bool = True):
     results = []
