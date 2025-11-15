@@ -64,7 +64,7 @@ def get_device() -> str:
 # =========================
 
 def h5_path_for_rat(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
-    """Expected HDF5 location."""
+    """Expected HDF5 location (10 ms bins, behavior etc.)."""
     root = Path(data_root)
     return root / "Rat-Data-hdf5" / f"Rat{rid}" / "NpxFiringRate_Behavior_SBL_10msBINS_0smoothing.hdf5"
 
@@ -72,12 +72,26 @@ def h5_path_for_rat(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
 def csv_path_responsive_all(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
     """
     Prefer the 1 Hz-binned CSV if present; otherwise fall back to 10 ms CSV.
+    (Used as a fallback when pre-downsampled .npy is not available.)
     """
     root = Path(data_root)
     dirp = root / "Sub-Data" / "Only-Responsive" / f"Rat{rid}" / f"area_splits_rat{rid}_responsive"
     csv_1s = dirp / "responsive_rates_raw_binned_1000ms.csv"
     csv_10ms = dirp / "responsive_rates_raw.csv"
     return csv_1s if csv_1s.exists() else csv_10ms
+
+
+def fr_npy_100ms_path_for_rat(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
+    """
+    Pre-downsampled firing rates at 100 ms bins.
+    Assumes layout:
+      data_root.parent / "RSLDS_SRNN" / "Downsampled-FiringRates" / NpxFiringRate_100msBINSRat{rid}.npy
+    e.g.
+      /content/drive/MyDrive/rSLDS -> parent = /content/drive/MyDrive
+      /content/drive/MyDrive/RSLDS_SRNN/Downsampled-FiringRates/NpxFiringRate_100msBINSRat15.npy
+    """
+    base = data_root.parent / "RSLDS_SRNN" / "Downsampled-FiringRates"
+    return base / f"NpxFiringRate_100msBINSRat{rid}.npy"
 
 
 def base_model_dir(rid: int, outputs_root: Path = DEFAULT_OUTPUTS_ROOT) -> Path:
@@ -420,7 +434,7 @@ class TrainConfig:
     K_states: int = 5
     latent_dim: int = 8
     kappa: float = 0.0
-    use_inputs: bool = True           # <-- NEW: if False, ignore external inputs entirely
+    use_inputs: bool = True           # if False, ignore external inputs entirely
 
     # training
     num_iters: int = 2000
@@ -527,35 +541,43 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
 
     h5p = h5_path_for_rat(cfg.rat_id, cfg.data_root)
     csvp = csv_path_responsive_all(cfg.rat_id, cfg.data_root)
-    if not csvp.exists():
-        return {"status": "missing_csv", "msg": str(csvp)}
+    frnpy = fr_npy_100ms_path_for_rat(cfg.rat_id, cfg.data_root)
+    fr_from_npy = frnpy.exists()
 
     have_h5 = h5p.exists()
+    have_csv = csvp.exists()
+
+    if cfg.verbose:
+        print(f"[inputs] fr_npy_exists={fr_from_npy} → {frnpy}")
+        print(f"[inputs] csv={csvp} (exists={have_csv})")
+        print(f"[inputs] h5_found={have_h5} → {h5p}")
+
+    if (not fr_from_npy) and (not have_csv):
+        return {
+            "status": "missing_fr",
+            "msg": f"No firing-rate input found for rat {cfg.rat_id}: {frnpy} or {csvp}",
+        }
+
     if (not have_h5) and (not cfg.h5_optional):
         return {"status": "missing_h5", "msg": str(h5p)}
 
-    if cfg.verbose:
-        print(f"[inputs] csv={csvp}")
-        print(f"[inputs] h5_found={have_h5} → {h5p}")
-
-    # ----- load CSV -----
-    df = read_wide_csv(csvp)
-    if "time_s" in df.columns:
-        t = df.pop("time_s").values
+    # ----- load FR + optional time from CSV or NPY -----
+    t = None
+    if fr_from_npy:
+        # True 100 ms binned FR
+        FR_TN = np.load(frnpy).astype(float)
     else:
-        t = None
-
-    FR_TN = df.values.astype(float)
+        # Fallback: responsive CSV (either 10 ms or 1 s binned)
+        df = read_wide_csv(csvp)
+        if "time_s" in df.columns:
+            t = df.pop("time_s").values
+        FR_TN = df.values.astype(float)
 
     # ----- load footshock/time from H5 if available -----
     shock_times = None
     if have_h5:
         with h5py.File(h5p, "r") as h5:
-            if t is None:
-                if "time" in h5:
-                    t = h5["time"][...]
-                elif "/Behavior/time" in h5:
-                    t = h5["/Behavior/time"][...]
+            # we only really need footshock_times; time is optional here
             if "footshock_times" in h5:
                 shock_times = h5["footshock_times"][...]
         if cfg.verbose:
@@ -565,34 +587,53 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         if cfg.verbose:
             print("[footshock] no H5 available → will default to zeros")
 
-    # if still no time vector, synthesize from ms_per_sample
-    if t is None:
+    # ----- build FR_sec and u_sec -----
+    if fr_from_npy:
+        # We assume FR_TN is already at ms_per_sample resolution (100 ms by default).
         if cfg.ms_per_sample is None:
-            raise ValueError("CSV-only mode needs training.ms_per_sample set in YAML")
-        dt = cfg.ms_per_sample / 1000.0
-        t = np.arange(FR_TN.shape[0]) * dt
+            msps = 100  # sensible default for these pre-binned files
+        else:
+            msps = int(cfg.ms_per_sample)
+        dt = msps / 1000.0
+        T = FR_TN.shape[0]
+        t_grid = np.arange(T) * dt  # in seconds
 
-    # build binary regressor at native resolution
-    footshock = build_footshock_regressor(t, shock_times, expand_sec=float(cfg.shock_expand_sec))
-    if cfg.verbose:
-        print(f"[u_raw] built regressor on native grid: shape={footshock.shape}, any={bool(np.any(footshock>0))}")
+        footshock = build_footshock_regressor(t_grid, shock_times, expand_sec=float(cfg.shock_expand_sec))
+        FR_sec = np.nan_to_num(FR_TN, nan=0.0, posinf=0.0, neginf=0.0)
+        u_sec = np.nan_to_num(footshock.astype(FR_sec.dtype), nan=0.0, posinf=0.0, neginf=0.0)
 
-    # ----- resample -----
-    if cfg.ms_per_sample is None:
-        msps = int(round(1000 * float(np.median(np.diff(t))))) if len(t) >= 3 else 10
+        if cfg.verbose:
+            nz = int(np.count_nonzero(u_sec))
+            uniq = np.unique(u_sec).tolist()
+            print(f"[u_100ms] shape={u_sec.shape}, nonzero_samples={nz}, unique={uniq[:8]}")
     else:
-        msps = cfg.ms_per_sample
-    if cfg.verbose:
-        print(f"↳ inferred ms_per_sample ≈ {msps} ms")
+        # ORIGINAL path: use CSV FR_TN + time vector as "native" grid,
+        # then downsample to 1 Hz via downsample_FR_and_u.
+        if t is None:
+            if cfg.ms_per_sample is None:
+                raise ValueError("CSV-only mode needs training.ms_per_sample set in YAML")
+            dt = cfg.ms_per_sample / 1000.0
+            t = np.arange(FR_TN.shape[0]) * dt
 
-    FR_sec, u_sec = downsample_FR_and_u(FR_TN, footshock, ms_per_sample=msps, rate_mode=cfg.rate_mode)
+        footshock = build_footshock_regressor(t, shock_times, expand_sec=float(cfg.shock_expand_sec))
+        if cfg.ms_per_sample is None:
+            msps = int(round(1000 * float(np.median(np.diff(t))))) if len(t) >= 3 else 10
+        else:
+            msps = int(cfg.ms_per_sample)
+        if cfg.verbose:
+            print(f"↳ inferred ms_per_sample ≈ {msps} ms")
+
+        FR_sec, u_sec = downsample_FR_and_u(FR_TN, footshock, ms_per_sample=msps, rate_mode=cfg.rate_mode)
+        if cfg.verbose:
+            nz = int(np.count_nonzero(u_sec))
+            uniq = np.unique(u_sec).tolist()
+            print(f"[u_1Hz] shape={u_sec.shape}, nonzero_samples={nz}, unique={uniq[:8]}")
+
+    # fully unsupervised training: zero out inputs
     if not cfg.use_inputs:
-        # fully unsupervised training: zero out inputs
         u_sec = np.zeros((FR_sec.shape[0], 1), dtype=FR_sec.dtype)
-    if cfg.verbose:
-        nz = int(np.count_nonzero(u_sec))
-        uniq = np.unique(u_sec).tolist()
-        print(f"[u_1Hz] shape={u_sec.shape}, nonzero_samples={nz}, unique={uniq[:8]}")
+        if cfg.verbose:
+            print(f"[inputs] use_inputs=False → u_sec zeroed, shape={u_sec.shape}")
 
     # Keep a z-scored copy of full-rate signals for later plots
     mu_full, sd_full = FR_sec.mean(0, keepdims=True), FR_sec.std(0, keepdims=True)
@@ -654,7 +695,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     infer = _Inf(input_dim=d_in, hidden_dim=cfg.latent_dim).to(device)
     gen = _Gen(D=d_in, K=cfg.K_states, H=cfg.latent_dim).to(device)
     gen.kappa = float(cfg.kappa)
-    gen.use_inputs = bool(cfg.use_inputs)  # <-- set flag for generator
+    gen.use_inputs = bool(cfg.use_inputs)  # set flag for generator
     infer.apply(_init_weights)
     gen.apply(_init_weights)
 
@@ -1078,7 +1119,7 @@ if __name__ == "__main__":
             rslds_init_use_head=rslds_use_head,
             prediction_horizons=tuple(int(h) for h in horizons),
             tbptt_steps=int(train.get("tbptt_steps")) if ("tbptt_steps" in train and train.get("tbptt_steps") is not None) else None,
-            use_inputs=bool(model.get("use_inputs", True)),  # <-- expose unsupervised toggle in YAML
+            use_inputs=bool(model.get("use_inputs", True)),
         )
         out = fit_srnn_with_split(cfg)
         print(json.dumps({"rat_id": rid, **out}, indent=2))
