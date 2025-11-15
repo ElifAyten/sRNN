@@ -1,13 +1,12 @@
 # ===============================
-# Experiment configuration: Rat 15 SRNN (single-file, selectable mode)
+# Experiment configuration: Rat 15 SRNN (100 ms from HDF5)
 # ===============================
 
 experiment:
-  name: "rat15_tbptt_w40_s10_k3"
-  description: "SRNN (DCA-8, K=3), TBPTT=24, window=40/stride=10; selectable inputs."
+  name: "rat15_100ms_from_h5_tbptt_w40_s10_k3"
+  description: "SRNN (DCA-8, K=3), TBPTT=24, window=40/stride=10; FR & shocks from 10 ms HDF5, downsampled to 100 ms."
   seed: 0
-  # mode is just metadata; you choose at run time via overrides or wrapper
-  mode: "unsupervised"     # or "with_inputs"
+  mode: "unsupervised"     # just metadata
 
 # ===============================
 # Data parameters
@@ -17,23 +16,16 @@ data:
   data_root: "/content/drive/MyDrive/rSLDS"                # <- rSLDS root
   outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
   subset: "responsive"
-  h5_optional: false
-
-  # NOTE:
-  # Firing rates will be loaded in this order:
-  # 1) If it exists:
-  #    /content/drive/MyDrive/RSLDS_SRNN/Downsampled-FiringRates/NpxFiringRate_100msBINSRat15.npy
-  #    (true 100 ms binned FR)
-  # 2) Otherwise: CSV under Sub-Data/Only-Responsive/... as before.
+  h5_optional: false      # require the HDF5; no CSV / npy
 
 # ===============================
 # Model parameters
 # ===============================
 model:
-  K_states: 3            # fixed
-  latent_dim: 8          # fixed
-  kappa: 6.0             # you can sweep this later
-  use_inputs: false      # <<< UNSUPERVISED: ignore footshocks during training
+  K_states: 3
+  latent_dim: 8
+  kappa: 6.0
+  use_inputs: false       # UNSUPERVISED: ignore u during training, but we still build and save it
 
 # ===============================
 # Dimensionality reduction
@@ -57,21 +49,21 @@ training:
   verbose: true
   test_split: 0.2
 
-  # IMPORTANT: native bin size of the FR input
-  # For NpxFiringRate_100msBINSRat15.npy, this *is* 100 ms:
-  ms_per_sample: 100
+  # IMPORTANT:
+  # native bin size of the HDF5 is 10 ms → we will downsample to 100 ms *inside* srnn_helper.py
+  ms_per_sample: 10      # native bin of HDF5 (10 ms)
   rate_mode: "mean"
 
-  # Footshock input params (only used when model.use_inputs=true)
-  shock_expand_sec: 1.5   # temporal support around shocks (in seconds)
-  u_scale: 2.0            # (currently unused in code, metadata only)
+  # Footshock input params (used to build binary regressor at 10 ms before downsampling)
+  shock_expand_sec: 1.5
+  u_scale: 2.0           # meta only
 
 # ===============================
 # Initialization & regularization
 # ===============================
 initialization:
   warmup_epochs: 700
-  lambda_entropy: 1.0e-5   # if state collapse, can increase to 1.0e-4
+  lambda_entropy: 1.0e-5
   lambda_usage: 2.0e-2
 
 # ===============================
@@ -84,14 +76,14 @@ evaluation:
 # Optional warm-start from rSLDS
 # ===============================
 rslds_init:
-  # Template: will become Rat15 automatically in srnn_helper.py
   path: "/content/drive/MyDrive/RSLDS_SRNN/ModelOutputs/BehaviouralModelrSLDS/Rat{rat_id}/behav_rslds_dropNaN_K3_D1_it12000_z_hat.npy"
   use_head: 500
 
 # ===============================
-# Small hyperparameter grid (metadata; safe if loader ignores)
+# Small hyperparameter grid (metadata)
 # ===============================
 search:
   kappa: [4.0, 6.0, 8.0, 10.0]
   lr: [1e-3, 5e-4, 1e-4]
+
 
