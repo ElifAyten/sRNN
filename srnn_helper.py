@@ -10,10 +10,6 @@
 # - prediction evaluation via post-hoc linear decoder h->Z
 # - DCA-lite or PCA front-end, robust NaN handling
 # - CLI that reads YAML, supports multiple rat IDs, and rSLDS path templates
-#
-# This version:
-# - Uses ONLY the 10 ms HDF5 for firing rates + behavior
-# - Downsampes from native 10 ms bins to 100 ms bins inside this file
 # ------------------------------------------------------------
 
 from __future__ import annotations
@@ -73,25 +69,6 @@ def h5_path_for_rat(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
     return root / "Rat-Data-hdf5" / f"Rat{rid}" / "NpxFiringRate_Behavior_SBL_10msBINS_0smoothing.hdf5"
 
 
-def csv_path_responsive_all(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
-    """
-    Kept for compatibility but NOT used in this version.
-    """
-    root = Path(data_root)
-    dirp = root / "Sub-Data" / "Only-Responsive" / f"Rat{rid}" / f"area_splits_rat{rid}_responsive"
-    csv_1s = dirp / "responsive_rates_raw_binned_1000ms.csv"
-    csv_10ms = dirp / "responsive_rates_raw.csv"
-    return csv_1s if csv_1s.exists() else csv_10ms
-
-
-def fr_npy_100ms_path_for_rat(rid: int, data_root: Path = DEFAULT_DATA_ROOT) -> Path:
-    """
-    Kept for compatibility but NOT used in this version.
-    """
-    base = data_root.parent / "RSLDS_SRNN" / "Downsampled-FiringRates"
-    return base / f"NpxFiringRate_100msBINSRat{rid}.npy"
-
-
 def base_model_dir(rid: int, outputs_root: Path = DEFAULT_OUTPUTS_ROOT) -> Path:
     return Path(outputs_root) / f"Rat{rid}-Model-Outputs"
 
@@ -109,16 +86,8 @@ def run_dir(
 
 
 # =========================
-# IO & preprocessing
+# IO & preprocessing (HDF5-only)
 # =========================
-
-def read_wide_csv(csv_path: Path) -> pd.DataFrame:
-    # kept for compatibility, not used in current flow
-    try:
-        return pd.read_csv(csv_path)
-    except Exception:
-        return pd.read_csv(csv_path, engine="python")
-
 
 def build_footshock_regressor(
     t: np.ndarray,
@@ -127,7 +96,7 @@ def build_footshock_regressor(
     expand_sec: float = 0.0,
 ) -> np.ndarray:
     """
-    Binary regressor with 1 around each shock time.
+    Binary regressor with 1 around each shock time on a given time grid t (seconds).
     If expand_sec == 0, mark the single closest sample to each shock.
     If expand_sec > 0, mark all samples within ±expand_sec of each shock.
     """
@@ -155,52 +124,69 @@ def _std_nan_robust(X: np.ndarray) -> np.ndarray:
     return (X - mu) / sd
 
 
-def downsample_to_100ms(FR_native, u_native, *, native_ms=10, rate_mode="mean"):
+def _downsample_10ms_to_target(
+    time_10: np.ndarray,
+    arr_10: np.ndarray,
+    *,
+    target_ms: float = 100.0,
+    mode: str = "mean",
+) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Downsample native-bin firing rates and inputs to 100 ms bins.
+    Generic downsample from ~10 ms bins to target_ms bins (default 100 ms).
 
-    FR_native : (T_native, N)
-    u_native  : (T_native, 1) or (T_native,) [binary or continuous regressor]
-    native_ms : size of native time bin in ms (e.g. 10 ms)
+    Parameters
+    ----------
+    time_10 : (T,) seconds
+    arr_10  : (T, N) or (T,) array (will be treated as 2D)
+    target_ms : desired bin size in ms
+    mode : "mean" or "sum"
+
+    Returns
+    -------
+    arr_ds : (T_ds, N) downsampled
+    time_ds : (T_ds,) corresponding time (mean within each bin)
     """
-    FR_native = np.asarray(FR_native, float)
-    u_native = np.asarray(u_native, float)
+    time_10 = np.asarray(time_10, float)
+    arr_10 = np.asarray(arr_10, float)
 
-    FR_native = np.nan_to_num(FR_native, nan=0.0, posinf=0.0, neginf=0.0)
-    u_native = np.nan_to_num(u_native, nan=0.0, posinf=0.0, neginf=0.0)
+    if arr_10.ndim == 1:
+        arr_10 = arr_10[:, None]
 
-    if u_native.ndim == 1:
-        u_native = u_native[:, None]
+    T, N = arr_10.shape
+    if T != len(time_10):
+        raise ValueError(f"Time/array length mismatch: T_time={len(time_10)}, T_arr={T}")
 
+    if T < 2:
+        raise ValueError("Not enough samples to infer native dt.")
+
+    dt = float(np.median(np.diff(time_10)))
+    native_ms = dt * 1000.0
     if native_ms <= 0:
-        raise ValueError("native_ms must be > 0")
+        raise ValueError(f"Non-positive native_ms from dt={dt}")
 
-    # how many native bins per 100 ms bin
-    factor = int(round(100 / native_ms))
+    factor = int(round(target_ms / native_ms))
     if factor <= 0:
-        raise ValueError("Downsample factor must be positive")
+        raise ValueError(f"Bad factor computed from target_ms={target_ms}, native_ms={native_ms}")
 
-    T_native, N = FR_native.shape
-    if u_native.shape[0] != T_native:
-        raise ValueError(f"Length mismatch: FR_native T={T_native} vs u_native T={u_native.shape[0]}")
+    T_ds = T // factor
+    if T_ds == 0:
+        raise ValueError("Recording too short for requested target_ms.")
 
-    T_bins = T_native // factor
-    if T_bins == 0:
-        raise ValueError("Recording too short for 100 ms binning.")
+    cut = T_ds * factor
+    arr_block = arr_10[:cut].reshape(T_ds, factor, N)
+    time_block = time_10[:cut].reshape(T_ds, factor)
 
-    cut = T_bins * factor
-    B_fr = FR_native[:cut].reshape(T_bins, factor, N)                 # (T_bins, factor, N)
-    B_u  = u_native[:cut].reshape(T_bins, factor, u_native.shape[1])  # (T_bins, factor, C)
-
-    if rate_mode == "mean":
-        FR_100ms = np.nanmean(B_fr, axis=1)
+    if mode == "mean":
+        arr_ds = np.nanmean(arr_block, axis=1)
+    elif mode == "sum":
+        arr_ds = np.nansum(arr_block, axis=1)
     else:
-        FR_100ms = np.nansum(B_fr, axis=1)
+        raise ValueError(f"Unknown mode={mode}")
 
-    # inputs: “any event in the 100 ms” (max over factor)
-    u_100ms = np.nanmax(B_u, axis=1)
-
-    return np.nan_to_num(FR_100ms), np.nan_to_num(u_100ms)
+    time_ds = np.nanmean(time_block, axis=1)
+    arr_ds = np.nan_to_num(arr_ds, nan=0.0, posinf=0.0, neginf=0.0)
+    time_ds = np.nan_to_num(time_ds, nan=0.0, posinf=0.0, neginf=0.0)
+    return arr_ds, time_ds
 
 
 # =========================
@@ -249,7 +235,11 @@ def make_embedding(FR_sec, method="dca1", n_components=8, random_state=None):
     elif method in ("dca1", "dca1_sym"):
         symmetric = (method == "dca1_sym")
         Z, _ = _time_lagged_projection(X, d=n_components, lag=1, ridge=1e-6, symmetric=symmetric)
-        return Z.astype(np.float32), {"method": method, "n_components": int(Z.shape[1]), "lag": 1}
+        return Z.astype(np.float32), {
+            "method": method,
+            "n_components": int(Z.shape[1]),
+            "lag": 1
+        }
     else:
         raise ValueError(f"Unknown DR method: {method}")
 
@@ -259,7 +249,7 @@ def make_embedding(FR_sec, method="dca1", n_components=8, random_state=None):
 # =========================
 
 class NeuralWindows(Dataset):
-    """Yields (window_x, window_u) with shape (W, d_in) and (W, 1+)."""
+    """Yields (window_x, window_u) with shape (W, d_in) and (W, 1)."""
     def __init__(self, Z_Td: np.ndarray, u_T1: np.ndarray, window:int=100, stride:int=1):
         X = np.asarray(Z_Td, np.float32)
         u = np.asarray(u_T1, np.float32)
@@ -476,8 +466,7 @@ class TrainConfig:
     lambda_usage: float = 1.0e-2
 
     # resampling / behavior
-    # Here: ms_per_sample = native bin size of HDF5 (e.g. 10 ms)
-    ms_per_sample: Optional[int] = None
+    ms_per_sample: Optional[int] = None   # kept for metadata; not used directly now
     rate_mode: str = "mean"
     shock_expand_sec: float = 0.0
 
@@ -555,7 +544,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     if device == "cuda":
         torch.backends.cudnn.benchmark = True
 
-    # ----- IO & HDF5-only loading -----
+    # ----- IO -----
     save_suffix = f"{cfg.subset_name}_{cfg.dr_method}{cfg.dr_n}"
     save_dir = run_dir(cfg.rat_id, save_suffix, cfg.K_states, cfg.seed, cfg.kappa, cfg.outputs_root)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -573,100 +562,95 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         return {"status": "missing_h5", "msg": str(h5p)}
 
     if not have_h5:
-        warnings.warn(f"No HDF5 file for rat {cfg.rat_id}: {h5p}")
-        return {"status": "missing_h5", "msg": str(h5p)}
+        return {"status": "missing_h5", "msg": f"HDF5 not found: {h5p}"}
 
-    def _get_first_dataset(h5, candidates, *, required=True, what="dataset"):
-        for key in candidates:
-            if key in h5:
-                return h5[key][...]
-        if required:
-            raise KeyError(
-                f"Could not find {what} in HDF5. Tried: {candidates}. "
-                f"Available top-level keys: {list(h5.keys())}"
-            )
-        return None
-
-    # ----- load 10 ms FR + behavior from HDF5 -----
+    # ----- load from HDF5 (10 ms native) -----
     with h5py.File(h5p, "r") as h5:
-        # You might need to adapt candidate names depending on your file’s structure
-        FR_10ms = _get_first_dataset(
-            h5,
-            ["FiringRate", "firing_rate", "FR", "rates"],
-            required=True,
-            what="10 ms firing rates",
-        )
-
-        t_10ms = _get_first_dataset(
-            h5,
-            ["time", "time_s", "Behavior/time", "behavior/time"],
-            required=False,
-            what="time vector (10 ms)",
-        )
-
-        shock_times = _get_first_dataset(
-            h5,
-            ["footshock_times", "Behavior/footshock_times", "behavior/footshock_times"],
-            required=False,
-            what="footshock_times",
-        )
-
-        u_10ms = _get_first_dataset(
-            h5,
-            ["footshock", "Behavior/footshock", "behavior/footshock"],
-            required=False,
-            what="footshock binary regressor",
-        )
-
-    T_native = FR_10ms.shape[0]
-    if t_10ms is None:
-        native_ms = cfg.ms_per_sample if (cfg.ms_per_sample is not None) else 10
-        dt = native_ms / 1000.0
-        t_10ms = np.arange(T_native) * dt
-
-    # If we don’t have a binary trace but do have footshock times → build regressor at 10 ms
-    if u_10ms is None:
-        footshock_reg = build_footshock_regressor(
-            np.asarray(t_10ms, float),
-            shock_times,
-            expand_sec=float(cfg.shock_expand_sec),
-        )
-        u_10ms = footshock_reg[:, 0]  # (T_native,)
-    else:
-        u_10ms = np.asarray(u_10ms, float).squeeze()
-
-    if cfg.verbose:
-        print(f"[H5] FR_10ms shape={FR_10ms.shape}")
-        print(f"[H5] native length T={FR_10ms.shape[0]}")
-        if shock_times is not None:
-            print(f"[H5] shock_times count={len(shock_times)}")
-        else:
-            print("[H5] no explicit shock_times; using binary trace only")
-
-    # ----- downsample 10 ms → 100 ms -----
-    native_ms = cfg.ms_per_sample if (cfg.ms_per_sample is not None) else 10
-    FR_sec, u_sec = downsample_to_100ms(
-        FR_10ms,
-        u_10ms,
-        native_ms=native_ms,
-        rate_mode=cfg.rate_mode,
-    )
-
-    if cfg.verbose:
-        nz = int(np.count_nonzero(u_sec))
-        uniq = np.unique(u_sec).tolist()
-        print(f"[downsample] FR_100ms shape={FR_sec.shape}")
-        print(f"[downsample] u_100ms shape={u_sec.shape}, nonzero_samples={nz}, unique={uniq[:8]}")
-
-    # fully unsupervised training: zero out inputs for SRNN, but still save real u_sec later
-    if not cfg.use_inputs:
+        keys = list(h5.keys())
         if cfg.verbose:
-            print("[inputs] use_inputs=False → inputs ignored during training, but saved for analysis.")
-        u_for_training = np.zeros((FR_sec.shape[0], 1), dtype=FR_sec.dtype)
-    else:
-        u_for_training = u_sec if u_sec.ndim == 2 else u_sec[:, None]
+            print(f"[H5] available keys: {keys}")
 
-    # Keep a z-scored copy of full-rate signals for later plots (100 ms grid)
+        if "firing_rates" not in h5:
+            raise KeyError(
+                "Could not find 'firing_rates' in HDF5. "
+                f"Available top-level keys: {keys}"
+            )
+        FR_10 = h5["firing_rates"][...]  # (T_10, N)
+        time_10 = h5["time"][...] if "time" in h5 else np.arange(FR_10.shape[0]) * 0.01
+        shock_times = h5["footshock_times"][...] if "footshock_times" in h5 else None
+        pupil_10 = h5["pupil_diameter"][...] if "pupil_diameter" in h5 else None
+        speed_10 = h5["speed"][...] if "speed" in h5 else None
+
+    FR_10 = np.asarray(FR_10, float)
+    time_10 = np.asarray(time_10, float)
+
+    if cfg.verbose:
+        print(f"[H5] FR_10 shape={FR_10.shape}")
+        print(f"[H5] time_10 shape={time_10.shape}")
+        if shock_times is not None:
+            print(f"[H5] footshock_times count={len(shock_times)}")
+        if pupil_10 is not None:
+            print(f"[H5] pupil_10 shape={np.shape(pupil_10)}")
+        if speed_10 is not None:
+            print(f"[H5] speed_10 shape={np.shape(speed_10)}")
+
+    # ensure 1D for behavior arrays
+    def _reshape_1d(x):
+        if x is None:
+            return None
+        x = np.asarray(x, float)
+        if x.ndim > 1:
+            x = x.reshape(x.shape[0], -1).mean(axis=1)
+        return x
+
+    pupil_10 = _reshape_1d(pupil_10)
+    speed_10 = _reshape_1d(speed_10)
+
+    # ----- downsample 10 ms -> 100 ms for FR, pupil, speed, time -----
+    target_ms = 100.0
+    FR_100, time_100 = _downsample_10ms_to_target(
+        time_10, FR_10, target_ms=target_ms, mode=cfg.rate_mode
+    )
+    if pupil_10 is not None:
+        pupil_100, _ = _downsample_10ms_to_target(
+            time_10, pupil_10, target_ms=target_ms, mode="mean"
+        )
+    else:
+        pupil_100 = None
+
+    if speed_10 is not None:
+        speed_100, _ = _downsample_10ms_to_target(
+            time_10, speed_10, target_ms=target_ms, mode="mean"
+        )
+    else:
+        speed_100 = None
+
+    if cfg.verbose:
+        print(f"[downsample] FR_100 shape={FR_100.shape}, time_100 shape={time_100.shape}")
+        if pupil_100 is not None:
+            print(f"[downsample] pupil_100 shape={pupil_100.shape}")
+        if speed_100 is not None:
+            print(f"[downsample] speed_100 shape={speed_100.shape}")
+
+    # ----- build footshock regressor on 100 ms grid -----
+    shock_reg_100 = build_footshock_regressor(
+        time_100, shock_times, expand_sec=float(cfg.shock_expand_sec)
+    )  # (T_100, 1)
+
+    # This is what the model *actually* sees:
+    if cfg.use_inputs:
+        u_model = np.nan_to_num(shock_reg_100.astype(FR_100.dtype), nan=0.0, posinf=0.0, neginf=0.0)
+        if cfg.verbose:
+            nz = int(np.count_nonzero(u_model))
+            print(f"[inputs] use_inputs=True → u_model nonzero_samples={nz}")
+    else:
+        u_model = np.zeros((FR_100.shape[0], 1), dtype=FR_100.dtype)
+        if cfg.verbose:
+            print(f"[inputs] use_inputs=False → u_model zeroed, shape={u_model.shape}")
+
+    FR_sec = np.nan_to_num(FR_100, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Keep a z-scored copy of full-rate signals for later plots
     mu_full, sd_full = FR_sec.mean(0, keepdims=True), FR_sec.std(0, keepdims=True)
     sd_full[sd_full == 0.0] = 1.0
     FRz_full = np.nan_to_num((FR_sec - mu_full) / sd_full, 0.0, 0.0, 0.0)
@@ -675,7 +659,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     Z_raw, dr_meta = make_embedding(
         FR_sec, method=cfg.dr_method, n_components=cfg.dr_n, random_state=cfg.dr_random_state
     )
-    Zz = StandardScaler().fit_transform(Z_raw).astype(np.float32)  # (T_100ms, d_in)
+    Zz = StandardScaler().fit_transform(Z_raw).astype(np.float32)  # (T, d_in)
     d_in = Zz.shape[1]
     if cfg.verbose:
         print(f"[DR] {dr_meta}  → d_in={d_in}")
@@ -683,7 +667,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     # ----- windows + split -----
     T = Zz.shape[0]
     train_idx, test_idx = make_time_split_indices(T, cfg.window_size, cfg.stride, cfg.test_split)
-    ds = NeuralWindows(Zz, u_for_training, window=cfg.window_size, stride=cfg.stride)
+    ds = NeuralWindows(Zz, u_model, window=cfg.window_size, stride=cfg.stride)
 
     n_train = len(train_idx)
     n_test = len(test_idx)
@@ -692,15 +676,22 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
 
     if cfg.verbose:
         num_windows = 1 + (T - cfg.window_size) // max(1, cfg.stride) if T >= cfg.window_size else 0
-        print(f"[split] T={T}, windows≈{num_windows}, train={n_train}, test={n_test}, "
-              f"train_bs={train_bs}, test_bs={test_bs}")
+        print(
+            f"[split] T={T}, windows≈{num_windows}, train={n_train}, test={n_test}, "
+            f"train_bs={train_bs}, test_bs={test_bs}"
+        )
 
     if n_train == 0:
         warnings.warn(
             f"No training windows. T={T}, window={cfg.window_size}, stride={cfg.stride}. "
             f"Reduce window_size/stride or ensure longer data."
         )
-        return {"status": "no_train_windows", "T": int(T), "window": int(cfg.window_size), "stride": int(cfg.stride)}
+        return {
+            "status": "no_train_windows",
+            "T": int(T),
+            "window": int(cfg.window_size),
+            "stride": int(cfg.stride),
+        }
 
     train_loader = DataLoader(
         ds,
@@ -797,7 +788,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         total = 0.0; total_elbo = 0.0; nb = 0
         for xb, ub in train_loader:
             x = xb.to(device, non_blocking=True)  # (B, W, D)
-            u = ub.to(device, non_blocking=True)  # (B, W, 1+)
+            u = ub.to(device, non_blocking=True)  # (B, W, 1)
             warm = (epoch <= cfg.warmup_epochs)
 
             if (tbptt is None) or (tbptt >= x.size(1)):
@@ -881,7 +872,8 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
                 run += 1; cur = v
             else:
                 runs.append(run); cur = v; run = 1
-        if run > 0: runs.append(run)
+        if run > 0:
+            runs.append(run)
         if runs:
             dwell_mean = float(np.mean(runs))
             dwell_median = float(np.median(runs))
@@ -900,8 +892,11 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         Z_mat = np.concatenate(Z_list, axis=0)           # (M,d_in)
         lam = 1e-3
         H_aug = np.concatenate([H_mat, np.ones((H_mat.shape[0], 1))], axis=1)  # bias
-        W_full = np.linalg.lstsq(H_aug.T @ H_aug + lam * np.eye(cfg.latent_dim + 1),
-                                 H_aug.T @ Z_mat, rcond=None)[0]               # ((H+1), d_in)
+        W_full = np.linalg.lstsq(
+            H_aug.T @ H_aug + lam * np.eye(cfg.latent_dim + 1),
+            H_aug.T @ Z_mat,
+            rcond=None
+        )[0]               # ((H+1), d_in)
         W = W_full[:-1, :]
         b = W_full[-1:, :]
     else:
@@ -962,9 +957,16 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     np.save(save_dir / "losses.npy", np.array(losses, dtype=np.float32))
     np.save(save_dir / "x_hat.npy", XH)            # inferred h on train windows
     np.save(save_dir / "z_hat.npy", ZH)            # hard states on train windows
-    np.save(save_dir / "FR_z.npy", FRz_full)       # z-scored full signal (100 ms grid)
-    np.save(save_dir / "X_dr.npy", Zz)             # reduced signal (full T at 100 ms)
-    np.save(save_dir / "footshock.npy", u_sec)     # real 100 ms shock regressor (not zeroed version)
+    np.save(save_dir / "FR_z.npy", FRz_full)       # z-scored full signal
+    np.save(save_dir / "X_dr.npy", Zz)             # reduced signal (full T)
+
+    # very important: save TRUE shock regressor (not u_model) + behavior & time
+    np.save(save_dir / "footshock.npy", shock_reg_100)
+    np.save(save_dir / "time_100ms.npy", time_100)
+    if pupil_100 is not None:
+        np.save(save_dir / "pupil_100ms.npy", pupil_100)
+    if speed_100 is not None:
+        np.save(save_dir / "speed_100ms.npy", speed_100)
 
     with open(save_dir / "dr_meta.json", "w") as f:
         json.dump(dr_meta, f, indent=2)
