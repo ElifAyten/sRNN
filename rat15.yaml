@@ -24,7 +24,7 @@ data:
 model:
   K_states: 3
   latent_dim: 8
-  kappa: 6.0
+  kappa: 8.0
   use_inputs: false       # UNSUPERVISED: ignore u during training, but we still build and save it
 
 # ===============================
