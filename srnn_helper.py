@@ -792,14 +792,15 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
             loss = loss + cfg.lambda_usage * usage_loss
 
         return loss, elbo.detach(), h_last.detach()
-
-    # ----- train (TBPTT if cfg.tbptt_steps is set) -----
+        # ----- train (TBPTT if cfg.tbptt_steps is set) -----
     losses, elbos = [], []
     tbptt = cfg.tbptt_steps if (cfg.tbptt_steps and cfg.tbptt_steps > 0) else None
 
     for epoch in range(1, cfg.num_iters + 1):
         infer.train()
         gen.train()
+
+        # warm-up LR
         base_lr = cfg.lr
         for g in opt.param_groups:
             g["lr"] = (base_lr * epoch / 10.0) if epoch <= 10 else g.get("lr", base_lr)
@@ -807,13 +808,16 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         total = 0.0
         total_elbo = 0.0
         nb = 0
-        for xb, ub in train_loader:
-            x = xb.to(device, non_blocking=True)  # (B, W, D)
-            u = ub.to(device, non_blocking=True)  # (B, W, 1)
+
+        # === tqdm progress bar ===
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{cfg.num_iters}", leave=False)
+
+        for xb, ub in pbar:
+            x = xb.to(device, non_blocking=True)
+            u = ub.to(device, non_blocking=True)
             warm = (epoch <= cfg.warmup_epochs)
 
             if (tbptt is None) or (tbptt >= x.size(1)):
-                # full-window update
                 opt.zero_grad()
                 loss, elbo, _ = _batch_step_chunk(x, u, warmup=warm, h0=None)
                 if torch.isnan(loss):
@@ -821,29 +825,41 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(params, 5.0)
                 opt.step()
+
                 total += float(loss.item())
                 total_elbo += float(elbo.item())
                 nb += 1
+
             else:
-                # truncated BPTT across chunks of length tbptt
+                # --- TBPTT ---
                 B, Wtot, _ = x.shape
                 h_carry = None
+
                 for t0 in range(0, Wtot, tbptt):
                     t1 = min(Wtot, t0 + tbptt)
                     x_chunk = x[:, t0:t1, :]
                     u_chunk = u[:, t0:t1, :]
+
                     opt.zero_grad()
                     loss, elbo, h_carry = _batch_step_chunk(x_chunk, u_chunk, warmup=warm, h0=h_carry)
+
                     if torch.isnan(loss):
                         h_carry = None
                         continue
+
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(params, 5.0)
                     opt.step()
+
                     h_carry = h_carry.detach()
+
                     total += float(loss.item())
                     total_elbo += float(elbo.item())
                     nb += 1
+
+            # update progress bar
+            if nb > 0:
+                pbar.set_postfix({"loss": total / nb, "elbo": total_elbo / nb})
 
         if nb == 0:
             warnings.warn("No batches were processed. Check window/stride and dataset length.")
@@ -868,6 +884,9 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
                 },
                 save_dir / f"epoch_{epoch}.pth",
             )
+
+        # ----- train (TBPTT if cfg.tbptt_steps is set) -----
+    
 
     # ----- inference snapshot on train loader (for usage/dwell) -----
     infer.eval()
