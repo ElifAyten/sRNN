@@ -39,7 +39,7 @@ dr:
 # Training configuration
 # ===============================
 training:
-  num_iters: 15000
+  num_iters: 10000
   window_size: 200     # ~20 s at 100 ms
   stride: 20           # overlapping windows, but fewer than stride=10
   tbptt_steps: 120     # full window TBPTT
