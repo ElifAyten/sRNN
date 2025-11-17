@@ -40,9 +40,9 @@ dr:
 # ===============================
 training:
   num_iters: 15000
-  window_size: 200           # CHANGED  (≈20 s at 100 ms)
-  stride: 20                 # CHANGED  (more overlap than before but fewer windows than stride=10)
-  tbptt_steps: 200           # CHANGED  (backprop over full 20 s window)
+  window_size: 50           # CHANGED  (≈20 s at 100 ms)
+  stride: 15                 # CHANGED  (more overlap than before but fewer windows than stride=10)
+  tbptt_steps: 50           # CHANGED  (backprop over full 20 s window)
   batch_size: 32             # CHANGED  (smaller batch for memory)
   lr: 1e-4
   overwrite: true
