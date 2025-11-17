@@ -31,6 +31,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from numpy.linalg import eigh
 import matplotlib.pyplot as plt
+from tqdm import tqdm
+
 
 
 # =========================
