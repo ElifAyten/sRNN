@@ -3,10 +3,10 @@
 # ===============================
 
 experiment:
-  name: "rat16_100ms_from_h5_tbptt_w40_s10_k3"
-  description: "SRNN (DCA-8, K=3), TBPTT=24, window=40/stride=10; FR & shocks from 10 ms HDF5, downsampled to 100 ms."
+  name: "rat16_100ms_from_h5_tbptt_w200_s20_k3"
+  description: "SRNN (DCA-8, K=3), TBPTT=200, window=200/stride=20; FR & shocks from 10 ms HDF5, downsampled to 100 ms."
   seed: 0
-  mode: "unsupervised"     # just metadata
+  mode: "unsupervised"
 
 # ===============================
 # Data parameters
@@ -24,7 +24,7 @@ data:
 model:
   K_states: 3
   latent_dim: 8
-  kappa: 6.0
+  kappa: 7.0          # increased stickiness
   use_inputs: false
 
 # ===============================
@@ -40,10 +40,10 @@ dr:
 # ===============================
 training:
   num_iters: 15000
-  window_size: 40
-  stride: 10
-  tbptt_steps: 24
-  batch_size: 256
+  window_size: 200     # ~20 s at 100 ms
+  stride: 20           # overlapping windows, but fewer than stride=10
+  tbptt_steps: 200     # full window TBPTT
+  batch_size: 32       # smaller for memory
   lr: 1e-4
   overwrite: true
   verbose: true
@@ -80,5 +80,5 @@ rslds_init:
 # Small hyperparameter grid (metadata)
 # ===============================
 search:
-  kappa: [4.0, 6.0, 8.0, 10.0]
+  kappa: [6.0, 8.0, 10.0]
   lr: [1e-3, 5e-4, 1e-4]
