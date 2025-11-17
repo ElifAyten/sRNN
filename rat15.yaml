@@ -44,7 +44,7 @@ training:
   window_size: 200     # this is causing it takes too much time      
   stride: 15                
   tbptt_steps: 200          
-  batch_size: 32             
+  batch_size: 64             
   lr: 1e-4
   overwrite: true
   verbose: true
