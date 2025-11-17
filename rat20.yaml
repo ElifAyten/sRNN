@@ -1,9 +1,16 @@
-# configs/rat20_srnn.yaml
-experiment:
-  name: "rat20_dca1_h8_k3_fast"
-  description: "SRNN with DCA(d=8), K=3, warm-start from rSLDS z."
-  seed: 0
+# ===============================
+# Experiment configuration: Rat 20 SRNN (100 ms from HDF5)
+# ===============================
 
+experiment:
+  name: "rat20_100ms_from_h5_tbptt_w200_s20_k3"    
+  description: "SRNN (DCA-8, K=3), TBPTT=200, window=200/stride=20; FR & shocks from 10 ms HDF5, downsampled to 100 ms."
+  seed: 0
+  mode: "unsupervised"
+
+# ===============================
+# Data parameters
+# ===============================
 data:
   rat_id: 20
   data_root: "/content/drive/MyDrive/rSLDS"
@@ -11,38 +18,68 @@ data:
   subset: "responsive"
   h5_optional: false
 
+# ===============================
+# Model parameters
+# ===============================
 model:
   K_states: 3
   latent_dim: 8
-  kappa: 1.0
+  kappa: 7.0
+  use_inputs: false
 
+# ===============================
+# Dimensionality reduction
+# ===============================
 dr:
   method: "dca1"
   n_components: 8
   random_state: 0
 
+# ===============================
+# Training configuration
+# ===============================
 training:
-  num_iters: 1200
-  window_size: 124
-  stride: 18
-  batch_size: 256
+  num_iters: 1500
+  window_size: 200
+  stride: 20
+  tbptt_steps: 200
+  batch_size: 64
   lr: 1e-4
   overwrite: true
   verbose: true
   test_split: 0.2
-  ms_per_sample: 1000
+
+  ms_per_sample: 10
   rate_mode: "mean"
-  shock_expand_sec: 0.0
 
+  shock_expand_sec: 1.5
+  u_scale: 2.0
+
+# ===============================
+# Initialization & regularization
+# ===============================
 initialization:
-  warmup_epochs: 200
-  lambda_entropy: 1.0e-3
-  lambda_usage: 1.0e-2
+  warmup_epochs: 300
+  lambda_entropy: 1.0e-5
+  lambda_usage: 2.0e-2
 
+# ===============================
+# Evaluation
+# ===============================
 evaluation:
   prediction_horizons: [10, 20, 30, 40]
 
-# --- NEW: pass your rSLDS labels here ---
+# ===============================
+# Optional warm-start from rSLDS
+# ===============================
 rslds_init:
-  z_hat_path: "/content/drive/MyDrive/sRNN/Rat15/initialization_for_srnn/drop_nan_15000i_z_hat_A.npy"
-  use_head: 200     # how many early samples to estimate pi0 (None = full series)
+  path: "/content/drive/MyDrive/RSLDS_SRNN/ModelOutputs/BehaviouralModelrSLDS/Rat{rat_id}/behav_rslds_dropNaN_K3_D1_it12000_z_hat.npy"
+  use_head: 500
+
+# ===============================
+# Small hyperparameter grid (metadata)
+# ===============================
+search:
+  kappa: [6.0, 8.0, 10.0]
+  lr: [1e-3, 5e-4, 1e-4]
+
