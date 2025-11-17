@@ -4,7 +4,7 @@
 
 experiment:
   name: "rat16_100ms_from_h5_tbptt_w200_s20_k3"
-  description: "SRNN (DCA-8, K=3), TBPTT=200, window=200/stride=20; FR & shocks from 10 ms HDF5, downsampled to 100 ms."
+  description: "SRNN (DCA-8, K=3), TBPTT=120, window=200/stride=20; FR & shocks from 10 ms HDF5, downsampled to 100 ms."
   seed: 0
   mode: "unsupervised"
 
@@ -42,7 +42,7 @@ training:
   num_iters: 15000
   window_size: 200     # ~20 s at 100 ms
   stride: 20           # overlapping windows, but fewer than stride=10
-  tbptt_steps: 200     # full window TBPTT
+  tbptt_steps: 120     # full window TBPTT
   batch_size: 32       # smaller for memory
   lr: 1e-4
   overwrite: true
