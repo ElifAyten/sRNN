@@ -40,10 +40,10 @@ dr:
 # ===============================
 training:
   num_iters: 10000
-  window_size: 200     # ~20 s at 100 ms
-  stride: 20           # overlapping windows, but fewer than stride=10
-  tbptt_steps: 120     # full window TBPTT
-  batch_size: 32       # smaller for memory
+  window_size: 100     # ~20 s at 100 ms
+  stride: 10          # overlapping windows, but fewer than stride=10
+  tbptt_steps: 60    # full window TBPTT
+  batch_size: 64  # smaller for memory
   lr: 1e-4
   overwrite: true
   verbose: true
