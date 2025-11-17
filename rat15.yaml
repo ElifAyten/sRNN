@@ -3,7 +3,7 @@
 # ===============================
 
 experiment:
-  name: "rat15_100ms_from_h5_tbptt_w200_s20_k3"     # CHANGED
+  name: "rat15_100ms_from_h5_tbptt_w200_s20_k3"    
   description: "SRNN (DCA-8, K=3), TBPTT=200, window=200/stride=20; FR & shocks from 10 ms HDF5, downsampled to 100 ms."  # CHANGED
   seed: 0
   mode: "unsupervised"
@@ -13,6 +13,7 @@ experiment:
 # ===============================
 data:
   rat_id: 15
+  # change the data roots
   data_root: "/content/drive/MyDrive/rSLDS"
   outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
   subset: "responsive"
@@ -24,8 +25,8 @@ data:
 model:
   K_states: 3
   latent_dim: 8
-  kappa: 7.0                 # you already increased this
-  use_inputs: false          # keep unsupervised for now
+  kappa: 7.0                 
+  use_inputs: false          
 
 # ===============================
 # Dimensionality reduction
@@ -40,20 +41,18 @@ dr:
 # ===============================
 training:
   num_iters: 15000
-  window_size: 50           # CHANGED  (≈20 s at 100 ms)
-  stride: 15                 # CHANGED  (more overlap than before but fewer windows than stride=10)
-  tbptt_steps: 50           # CHANGED  (backprop over full 20 s window)
-  batch_size: 32             # CHANGED  (smaller batch for memory)
+  window_size: 200     # this is causing it takes too much time      
+  stride: 15                
+  tbptt_steps: 200          
+  batch_size: 32             
   lr: 1e-4
   overwrite: true
   verbose: true
   test_split: 0.2
 
-  # native bin size of the HDF5 is 10 ms → downsample to 100 ms inside srnn_helper.py
   ms_per_sample: 10
   rate_mode: "mean"
 
-  # Footshock input params (still used only to build u, but ignored because use_inputs=false)
   shock_expand_sec: 1.5
   u_scale: 2.0
 
@@ -74,6 +73,8 @@ evaluation:
 # ===============================
 # Optional warm-start from rSLDS
 # ===============================
+
+# you also need to change this place
 rslds_init:
   path: "/content/drive/MyDrive/RSLDS_SRNN/ModelOutputs/BehaviouralModelrSLDS/Rat{rat_id}/behav_rslds_dropNaN_K3_D1_it12000_z_hat.npy"
   use_head: 500
