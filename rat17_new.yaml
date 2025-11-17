@@ -3,11 +3,14 @@
 # ===============================
 
 experiment:
-  name: "rat17_100ms_from_h5_tbptt_w40_s10_k3"
-  description: "SRNN (DCA-8, K=3), TBPTT=24, window=40/stride=10; FR & shocks from 10 ms HDF5, downsampled to 100 ms."
+  name: "rat17_100ms_from_h5_tbptt_w200_s20_k3"
+  description: "SRNN (DCA-8, K=3), TBPTT=200, window=200/stride=20; FR & shocks from 10 ms HDF5, downsampled to 100 ms."
   seed: 0
   mode: "unsupervised"
 
+# ===============================
+# Data parameters
+# ===============================
 data:
   rat_id: 17
   data_root: "/content/drive/MyDrive/rSLDS"
@@ -15,23 +18,32 @@ data:
   subset: "responsive"
   h5_optional: false
 
+# ===============================
+# Model parameters
+# ===============================
 model:
   K_states: 3
   latent_dim: 8
-  kappa: 6.0
+  kappa: 7.0               # <-- increased stickiness
   use_inputs: false
 
+# ===============================
+# Dimensionality reduction
+# ===============================
 dr:
   method: "dca1"
   n_components: 8
   random_state: 0
 
+# ===============================
+# Training configuration
+# ===============================
 training:
   num_iters: 15000
-  window_size: 40
-  stride: 10
-  tbptt_steps: 24
-  batch_size: 256
+  window_size: 200        # <-- larger context for shocks
+  stride: 20              # <-- fewer windows, more stable
+  tbptt_steps: 200        # <-- full window backprop
+  batch_size: 32          # <-- fits memory at larger window
   lr: 1e-4
   overwrite: true
   verbose: true
@@ -41,18 +53,30 @@ training:
   shock_expand_sec: 1.5
   u_scale: 2.0
 
+# ===============================
+# Initialization & regularization
+# ===============================
 initialization:
   warmup_epochs: 700
   lambda_entropy: 1.0e-5
   lambda_usage: 2.0e-2
 
+# ===============================
+# Evaluation
+# ===============================
 evaluation:
   prediction_horizons: [10, 20, 30, 40]
 
+# ===============================
+# Optional warm-start from rSLDS
+# ===============================
 rslds_init:
   path: "/content/drive/MyDrive/RSLDS_SRNN/ModelOutputs/BehaviouralModelrSLDS/Rat{rat_id}/behav_rslds_dropNaN_K3_D1_it12000_z_hat.npy"
   use_head: 500
 
+# ===============================
+# Small hyperparameter grid (metadata)
+# ===============================
 search:
-  kappa: [4.0, 6.0, 8.0, 10.0]
+  kappa: [6.0, 8.0, 10.0]
   lr: [1e-3, 5e-4, 1e-4]
