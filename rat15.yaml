@@ -40,9 +40,9 @@ dr:
 # Training configuration
 # ===============================
 training:
-  num_iters: 15000
+  num_iters: 3000
   window_size: 200     # this is causing it takes too much time      
-  stride: 15                
+  stride: 20                
   tbptt_steps: 200          
   batch_size: 64             
   lr: 1e-4
@@ -60,7 +60,7 @@ training:
 # Initialization & regularization
 # ===============================
 initialization:
-  warmup_epochs: 700
+  warmup_epochs: 300
   lambda_entropy: 1.0e-5
   lambda_usage: 2.0e-2
 
