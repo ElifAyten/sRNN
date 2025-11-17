@@ -40,7 +40,7 @@ dr:
 # Training configuration
 # ===============================
 training:
-  num_iters: 3000
+  num_iters: 1500
   window_size: 200     # this is causing it takes too much time      
   stride: 20                
   tbptt_steps: 200          
