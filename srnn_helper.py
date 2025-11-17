@@ -36,6 +36,8 @@ import matplotlib.pyplot as plt
 # =========================
 # Defaults (tune to Drive)
 # =========================
+
+# YOU NEED TO CHANGE HERE ALSO 
 DEFAULT_DATA_ROOT = Path("/content/drive/MyDrive/rSLDS")
 DEFAULT_OUTPUTS_ROOT = Path("/content/drive/MyDrive/sRNN/sRNN-Model-Outputs")
 
