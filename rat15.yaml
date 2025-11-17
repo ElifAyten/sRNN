@@ -3,20 +3,20 @@
 # ===============================
 
 experiment:
-  name: "rat15_100ms_from_h5_tbptt_w40_s10_k3"
-  description: "SRNN (DCA-8, K=3), TBPTT=24, window=40/stride=10; FR & shocks from 10 ms HDF5, downsampled to 100 ms."
+  name: "rat15_100ms_from_h5_tbptt_w200_s20_k3"     # CHANGED
+  description: "SRNN (DCA-8, K=3), TBPTT=200, window=200/stride=20; FR & shocks from 10 ms HDF5, downsampled to 100 ms."  # CHANGED
   seed: 0
-  mode: "unsupervised"     # just metadata
+  mode: "unsupervised"
 
 # ===============================
 # Data parameters
 # ===============================
 data:
   rat_id: 15
-  data_root: "/content/drive/MyDrive/rSLDS"                # <- rSLDS root
+  data_root: "/content/drive/MyDrive/rSLDS"
   outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
   subset: "responsive"
-  h5_optional: false      # require the HDF5; no CSV / npy
+  h5_optional: false
 
 # ===============================
 # Model parameters
@@ -24,8 +24,8 @@ data:
 model:
   K_states: 3
   latent_dim: 8
-  kappa: 8.0
-  use_inputs: false       # UNSUPERVISED: ignore u during training, but we still build and save it
+  kappa: 7.0                 # you already increased this
+  use_inputs: false          # keep unsupervised for now
 
 # ===============================
 # Dimensionality reduction
@@ -40,23 +40,22 @@ dr:
 # ===============================
 training:
   num_iters: 15000
-  window_size: 40
-  stride: 10
-  tbptt_steps: 24
-  batch_size: 256
+  window_size: 200           # CHANGED  (≈20 s at 100 ms)
+  stride: 20                 # CHANGED  (more overlap than before but fewer windows than stride=10)
+  tbptt_steps: 200           # CHANGED  (backprop over full 20 s window)
+  batch_size: 32             # CHANGED  (smaller batch for memory)
   lr: 1e-4
   overwrite: true
   verbose: true
   test_split: 0.2
 
-  # IMPORTANT:
-  # native bin size of the HDF5 is 10 ms → we will downsample to 100 ms *inside* srnn_helper.py
-  ms_per_sample: 10      # native bin of HDF5 (10 ms)
+  # native bin size of the HDF5 is 10 ms → downsample to 100 ms inside srnn_helper.py
+  ms_per_sample: 10
   rate_mode: "mean"
 
-  # Footshock input params (used to build binary regressor at 10 ms before downsampling)
+  # Footshock input params (still used only to build u, but ignored because use_inputs=false)
   shock_expand_sec: 1.5
-  u_scale: 2.0           # meta only
+  u_scale: 2.0
 
 # ===============================
 # Initialization & regularization
@@ -83,7 +82,7 @@ rslds_init:
 # Small hyperparameter grid (metadata)
 # ===============================
 search:
-  kappa: [4.0, 6.0, 8.0, 10.0]
+  kappa: [6.0, 8.0, 10.0]    # CHANGED (shifted grid up a bit)
   lr: [1e-3, 5e-4, 1e-4]
 
 
