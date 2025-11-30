@@ -34,6 +34,19 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 
+# ================
+# Config utilities
+# ================
+def _cfg_to_jsonable(cfg_obj):
+    """
+    Convert TrainConfig dataclass to JSON-safe dictionary.
+    Converts Path objects to strings.
+    """
+    d = asdict(cfg_obj)
+    for k, v in list(d.items()):
+        if isinstance(v, Path):
+            d[k] = str(v)
+    return d
 
 # =========================
 # Defaults (tune to Drive)
@@ -479,14 +492,6 @@ class TrainConfig:
     rslds_init_path: Optional[str] = None        # .npy path or template with {rat_id}
     rslds_init_use_head: Optional[int] = 200     # first N samples to estimate pi0 (None = all)
     prediction_horizons: Tuple[int, ...] = (10, 20, 30, 40)
-    
-def _cfg_to_jsonable(cfg_obj):
-    d = asdict(cfg_obj)
-    for k, v in list(d.items()):
-        if isinstance(v, Path):
-            d[k] = str(v)
-    return d
-
 
 
 def _init_weights(module):
@@ -1048,14 +1053,6 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
 
     with open(save_dir / "dr_meta.json", "w") as f:
         json.dump(dr_meta, f, indent=2)
-
-    # JSON-safe config dump (Path -> str)
-    def _cfg_to_jsonable(cfg_obj):
-        d = asdict(cfg_obj)
-        for k, v in list(d.items()):
-            if isinstance(v, Path):
-                d[k] = str(v)
-        return d
 
     with open(save_dir / "train_config.json", "w") as f:
         json.dump(_cfg_to_jsonable(cfg), f, indent=2)
