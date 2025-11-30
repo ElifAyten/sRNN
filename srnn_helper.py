@@ -612,6 +612,13 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         raise ValueError(
             f"[H5] firing_rates shape {FR_10.shape} inconsistent with time length {len(time_10)}"
         )
+        
+    def _cfg_to_jsonable(cfg_obj):
+    d = asdict(cfg_obj)
+    for k, v in list(d.items()):
+        if isinstance(v, Path):
+            d[k] = str(v)
+    return d
 
     # ensure 1D for behavior arrays
     def _reshape_1d(x):
@@ -889,14 +896,16 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
             torch.save(
                 {
                     "epoch": epoch,
-                    "infer": infer.state_dict(),
-                    "gen": gen.state_dict(),
-                    "opt": opt.state_dict(),
+                    "infer_state_dict": infer.state_dict(),
+                    "gen_state_dict": gen.state_dict(),
+                    "optimizer_state_dict": opt.state_dict(),
                     "loss_history": losses,
                     "elbo_history": elbos,
+                    "cfg": _cfg_to_jsonable(cfg),
                 },
                 save_dir / f"epoch_{epoch}.pth",
             )
+
 
         # ----- train (TBPTT if cfg.tbptt_steps is set) -----
     
@@ -1075,15 +1084,18 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
 
     # finalize checkpoint
     torch.save(
-        {
-            "epoch": cfg.num_iters,
-            "infer": infer.state_dict(),
-            "gen": gen.state_dict(),
-            "loss_history": losses,
-            "elbo_history": elbos,
-        },
-        save_dir / "final_checkpoint.pth",
-    )
+    {
+        "epoch": cfg.num_iters,
+        "infer_state_dict": infer.state_dict(),
+        "gen_state_dict": gen.state_dict(),
+        "optimizer_state_dict": opt.state_dict(),
+        "loss_history": losses,
+        "elbo_history": elbos,
+        "cfg": _cfg_to_jsonable(cfg),
+    },
+    save_dir / "final_checkpoint.pth",
+)
+
 
     out = {
         "status": "ok",
