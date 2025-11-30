@@ -686,8 +686,19 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
 
     # ----- windows + split -----
     T = Zz.shape[0]
-    train_idx, test_idx = make_time_split_indices(T, cfg.window_size, cfg.stride, cfg.test_split)
+    num_windows = 1 + (T - cfg.window_size) // max(1, cfg.stride)
+    
+    # --- FIX: disable split completely when test_split == 0 ---
+    if cfg.test_split == 0.0:
+        train_idx = list(range(num_windows))   # ALL windows
+        test_idx = []                          # NO test windows
+    else:
+        train_idx, test_idx = make_time_split_indices(
+            T, cfg.window_size, cfg.stride, cfg.test_split
+        )
+    
     ds = NeuralWindows(Zz, u_model, window=cfg.window_size, stride=cfg.stride)
+
 
     n_train = len(train_idx)
     n_test = len(test_idx)
