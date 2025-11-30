@@ -479,6 +479,14 @@ class TrainConfig:
     rslds_init_path: Optional[str] = None        # .npy path or template with {rat_id}
     rslds_init_use_head: Optional[int] = 200     # first N samples to estimate pi0 (None = all)
     prediction_horizons: Tuple[int, ...] = (10, 20, 30, 40)
+    
+def _cfg_to_jsonable(cfg_obj):
+    d = asdict(cfg_obj)
+    for k, v in list(d.items()):
+        if isinstance(v, Path):
+            d[k] = str(v)
+    return d
+
 
 
 def _init_weights(module):
@@ -613,12 +621,6 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
             f"[H5] firing_rates shape {FR_10.shape} inconsistent with time length {len(time_10)}"
         )
         
-    def _cfg_to_jsonable(cfg_obj):
-    d = asdict(cfg_obj)
-    for k, v in list(d.items()):
-        if isinstance(v, Path):
-            d[k] = str(v)
-    return d
 
     # ensure 1D for behavior arrays
     def _reshape_1d(x):
