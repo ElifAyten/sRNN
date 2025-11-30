@@ -36,8 +36,7 @@ training:
   lr: 5e-4
   overwrite: true
   verbose: true
-
-  test_split: 0.0                # <–– DISABLED
+  test_split: 0.0
   ms_per_sample: 100
   rate_mode: "mean"
 
