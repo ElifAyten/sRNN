@@ -1,0 +1,57 @@
+# ================================================================
+# SRNN CONFIG — Structured Hyperparameter Search + Validation Split
+# ================================================================
+
+experiment:
+  name: "rat15_srnn_hyperopt"
+  description: "SRNN hyperparameter search for rat15 (shock + behavior data), varied latent_dim / kappa / window_size / lr, with validation split"
+  seed: 0
+  mode: "unsupervised"
+
+data:
+  rat_id: 15
+  data_root: "/content/drive/MyDrive/rSLDS"
+  outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
+  subset: "responsive"
+  h5_optional: false
+
+model:
+  # we'll sweep over latent_dim, but start at a moderate value
+  K_states: 3
+  latent_dim: 16   # mid-range latent dimensionality
+  use_inputs: true
+
+training:
+  num_iters: 1500            # slightly longer than before for better convergence
+  window_size: 50            # will be swept optionally
+  stride: 10
+  tbptt_steps: 100
+  batch_size: 64
+  lr: 5e-4                   # to be swept
+  overwrite: true
+  verbose: true
+  test_split: 0.2            # hold out 20% of the data for validation
+  ms_per_sample: 100
+  rate_mode: "mean"
+
+  shock_expand_sec: 1.0
+  u_scale: 1.5
+
+initialization:
+  warmup_epochs: 200
+  lambda_entropy: 5e-5
+  lambda_usage: 1e-2
+
+evaluation:
+  prediction_horizons: [10, 20, 30, 40]
+
+search:
+  latent_dim: [8, 12, 16, 21]     # test small to moderately large latent spaces
+  kappa: [0.5, 1.0, 2.0]
+  lr: [3e-4, 5e-4]
+  window_size: [40, 50, 60]       # test a bit larger temporal context
+
+# (optional) if your code supports it:
+# regularization:
+#   dropout_rate: [0.0, 0.2]       # or weight decay, etc.
+
