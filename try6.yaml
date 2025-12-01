@@ -18,7 +18,7 @@ data:
 
 model:
   K_states: 3
-  latent_dim: 
+  latent_dim: 8
   kappa: 2.0
   use_inputs: true               # shock/pupil/speed influence transitions
 
