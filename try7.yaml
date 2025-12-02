@@ -1,0 +1,52 @@
+# rat15_srnn_tuning.yaml
+experiment:
+  name: "rat15_srnn_tuning"
+  description: "Hyperparameter tuning with train/test split for Rat15."
+  seed: 0
+  mode: "unsupervised"
+
+data:
+  rat_id: 15
+  data_root: "/content/drive/MyDrive/rSLDS"
+  outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
+  subset: "responsive"
+  h5_optional: false
+
+model:
+  K_states: 3
+  latent_dim: 8      # will change across runs
+  kappa: 1.0          # will change across runs
+  use_inputs: true
+
+dr:
+  method: "dca1"
+  n_components: 16
+  random_state: 0
+
+training:
+  num_iters: 1000
+  window_size: 50      # will change across runs
+  stride: 10
+  tbptt_steps: 100
+  batch_size: 64
+  lr: 5e-4             # will change across runs
+  overwrite: true
+  verbose: true
+  test_split: 0.2      # <<< IMPORTANT for comparison
+  ms_per_sample: 100
+  rate_mode: "mean"
+
+  shock_expand_sec: 1.0
+  u_scale: 1.5
+
+initialization:
+  warmup_epochs: 200
+  lambda_entropy: 1e-5
+  lambda_usage: 5e-3
+
+evaluation:
+  prediction_horizons: [10, 20, 30, 40]
+
+rslds_init:
+  path: "/content/drive/MyDrive/RSLDS_SRNN/ModelOutputs/BehaviouralModelrSLDS/Rat{rat_id}/behav_rslds_dropNaN_K3_D1_it12000_z_hat.npy"
+  use_head: 300
