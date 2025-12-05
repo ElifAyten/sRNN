@@ -52,7 +52,7 @@ def _cfg_to_jsonable(cfg_obj):
 # Defaults (tune to Drive)
 # =========================
 
-# YOU NEED TO CHANGE HERE ALSO 
+# YOU NEED TO CHANGE HERE ALSO
 DEFAULT_DATA_ROOT = Path("/content/drive/MyDrive/rSLDS")
 DEFAULT_OUTPUTS_ROOT = Path("/content/drive/MyDrive/sRNN/sRNN-Model-Outputs")
 
@@ -465,7 +465,7 @@ class TrainConfig:
     latent_dim: int = 8
     kappa: float = 0.0
     use_inputs: bool = True           # if False, ignore external inputs entirely
-  
+
     # NEW: use only behavior (pupil + speed) as observations
     behavior_only: bool = False
 
@@ -628,7 +628,6 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         raise ValueError(
             f"[H5] firing_rates shape {FR_10.shape} inconsistent with time length {len(time_10)}"
         )
-        
 
     # ensure 1D for behavior arrays
     def _reshape_1d(x):
@@ -686,6 +685,7 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
             print(f"[inputs] use_inputs=False → u_model zeroed, shape={u_model.shape}")
 
     FR_sec = np.nan_to_num(FR_100, nan=0.0, posinf=0.0, neginf=0.0)
+
     # --- NEW: behavior-only mode (use pupil + speed as observations instead of FR) ---
     if cfg.behavior_only:
         beh_list = []
@@ -714,12 +714,10 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         if cfg.verbose:
             print(f"[behavior-only] Using behavior as observations: FR_sec shape={FR_sec.shape}")
 
-
     # Keep a z-scored copy of full-rate signals for later plots
     mu_full, sd_full = FR_sec.mean(0, keepdims=True), FR_sec.std(0, keepdims=True)
     sd_full[sd_full == 0.0] = 1.0
     FRz_full = np.nan_to_num((FR_sec - mu_full) / sd_full, 0.0, 0.0, 0.0)
-
 
     # ----- DR -----
     Z_raw, dr_meta = make_embedding(
@@ -733,8 +731,8 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     # ----- windows + split -----
     T = Zz.shape[0]
     num_windows = 1 + (T - cfg.window_size) // max(1, cfg.stride)
-    
-    # --- FIX: disable split completely when test_split == 0 ---
+
+    # --- disable split completely when test_split == 0 ---
     if cfg.test_split == 0.0:
         train_idx = list(range(num_windows))   # ALL windows
         test_idx = []                          # NO test windows
@@ -742,9 +740,8 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
         train_idx, test_idx = make_time_split_indices(
             T, cfg.window_size, cfg.stride, cfg.test_split
         )
-    
-    ds = NeuralWindows(Zz, u_model, window=cfg.window_size, stride=cfg.stride)
 
+    ds = NeuralWindows(Zz, u_model, window=cfg.window_size, stride=cfg.stride)
 
     n_train = len(train_idx)
     n_test = len(test_idx)
@@ -752,9 +749,9 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
     test_bs = max(1, min(cfg.batch_size, n_test))
 
     if cfg.verbose:
-        num_windows = 1 + (T - cfg.window_size) // max(1, cfg.stride) if T >= cfg.window_size else 0
+        num_windows_dbg = 1 + (T - cfg.window_size) // max(1, cfg.stride) if T >= cfg.window_size else 0
         print(
-            f"[split] T={T}, windows≈{num_windows}, train={n_train}, test={n_test}, "
+            f"[split] T={T}, windows≈{num_windows_dbg}, train={n_train}, test={n_test}, "
             f"train_bs={train_bs}, test_bs={test_bs}"
         )
 
@@ -851,7 +848,8 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
             loss = loss + cfg.lambda_usage * usage_loss
 
         return loss, elbo.detach(), h_last.detach()
-        # ----- train (TBPTT if cfg.tbptt_steps is set) -----
+
+    # ----- train (TBPTT if cfg.tbptt_steps is set) -----
     losses, elbos = [], []
     tbptt = cfg.tbptt_steps if (cfg.tbptt_steps and cfg.tbptt_steps > 0) else None
 
@@ -944,10 +942,6 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
                 },
                 save_dir / f"epoch_{epoch}.pth",
             )
-
-
-        # ----- train (TBPTT if cfg.tbptt_steps is set) -----
-    
 
     # ----- inference snapshot on train loader (for usage/dwell) -----
     infer.eval()
@@ -1115,18 +1109,17 @@ def fit_srnn_with_split(cfg: TrainConfig) -> Dict:
 
     # finalize checkpoint
     torch.save(
-    {
-        "epoch": cfg.num_iters,
-        "infer_state_dict": infer.state_dict(),
-        "gen_state_dict": gen.state_dict(),
-        "optimizer_state_dict": opt.state_dict(),
-        "loss_history": losses,
-        "elbo_history": elbos,
-        "cfg": _cfg_to_jsonable(cfg),
-    },
-    save_dir / "final_checkpoint.pth",
-)
-
+        {
+            "epoch": cfg.num_iters,
+            "infer_state_dict": infer.state_dict(),
+            "gen_state_dict": gen.state_dict(),
+            "optimizer_state_dict": opt.state_dict(),
+            "loss_history": losses,
+            "elbo_history": elbos,
+            "cfg": _cfg_to_jsonable(cfg),
+        },
+        save_dir / "final_checkpoint.pth",
+    )
 
     out = {
         "status": "ok",
@@ -1240,7 +1233,7 @@ if __name__ == "__main__":
     rslds_use_head = rslds_blk.get("use_head", reg.get("rslds_init_use_head", 200))
 
     for rid in rat_ids:
-            cfg = TrainConfig(
+        cfg = TrainConfig(
             rat_id=rid,
             data_root=Path(data.get("data_root", str(DEFAULT_DATA_ROOT))),
             outputs_root=Path(data.get("outputs_root", str(DEFAULT_OUTPUTS_ROOT))),
@@ -1272,7 +1265,6 @@ if __name__ == "__main__":
             prediction_horizons=tuple(int(h) for h in horizons),
             tbptt_steps=int(train.get("tbptt_steps")) if ("tbptt_steps" in train and train.get("tbptt_steps") is not None) else None,
             use_inputs=bool(model.get("use_inputs", True)),
-            # NEW:
             behavior_only=bool(model.get("behavior_only", False)),
         )
 
