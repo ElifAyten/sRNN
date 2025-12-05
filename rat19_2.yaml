@@ -1,0 +1,62 @@
+# ================================================================
+# SRNN CONFIG A — 20 Continuous Latents, 4 Discrete States
+# RAT 19 — 100 ms FROM HDF5, FULL TRAINING (NO SPLIT)
+# ================================================================
+
+experiment:
+  name: "rat19_srnn_K4_D20_fulltrain"
+  description: "SRNN with K=4 discrete states, 20 cont. latents. Full training (no split)."
+  seed: 0
+  mode: "unsupervised"
+
+data:
+  rat_id: 19
+  data_root: "/content/drive/MyDrive/rSLDS"
+  outputs_root: "/content/drive/MyDrive/sRNN/sRNN-Model-Outputs"
+  subset: "responsive"
+  h5_optional: false
+
+model:
+  K_states: 4
+  latent_dim: 20
+  kappa: 4.0
+  use_inputs: true
+
+dr:
+  method: "dca1"
+  n_components: 20
+  random_state: 0
+
+training:
+  num_iters: 1000
+  window_size: 50
+  stride: 10
+  tbptt_steps: 100
+  batch_size: 64
+  lr: 5e-4
+  overwrite: true
+  verbose: true
+  test_split: 0.0
+
+  ms_per_sample: 100
+  rate_mode: "mean"
+
+  shock_expand_sec: 1.0
+  u_scale: 1.5
+
+initialization:
+  warmup_epochs: 200
+  lambda_entropy: 5e-5
+  lambda_usage: 1e-2
+
+evaluation:
+  prediction_horizons: [10, 20, 30, 40]
+
+rslds_init:
+  path: "/content/drive/MyDrive/RSLDS_SRNN/ModelOutputs/BehaviouralModelrSLDS/Rat{rat_id}/behav_rslds_dropNaN_K3_D1_it12000_z_hat.npy"
+  use_head: 300
+
+search:
+  kappa: [0.5, 1.0, 2.0]
+  lr: [5e-4, 3e-4]
+  window_size: [40, 50]
